@@ -13,8 +13,14 @@ suppressPackageStartupMessages({
 project_root <- "/Users/tianyuan/Desktop/github_dev/tusco-paper"
 data_root <- file.path(project_root, "figs/data")
 
-# TUSCO reference (mouse, multi-exon)
-tusco_file <- file.path(data_root, "tusco/tusco_mouse_multi_exon.tsv")
+# TUSCO references
+# - Universal (tusco_mouse.tsv)
+# - Tissue-specific (brain/kidney)
+# - Multi-exon set retained for backward compatibility (not used in plotting)
+tusco_universal_tsv <- file.path(data_root, "tusco/tusco_mouse.tsv")
+tusco_brain_tsv     <- file.path(data_root, "tusco/tusco_mouse_brain.tsv")
+tusco_kidney_tsv    <- file.path(data_root, "tusco/tusco_mouse_kidney.tsv")
+tusco_multi_exon_tsv <- file.path(data_root, "tusco/tusco_mouse_multi_exon.tsv")
 
 # Your classification inputs (Iso-Seq AR)
 isoseq_ar_root <- file.path(data_root, "nih/isoseq_ar")
@@ -37,7 +43,7 @@ read_tsv_safe <- function(file_path, ...) {
            error = function(e) stop("Unable to read ", file_path, ": ", e$message))
 }
 
-# Load TUSCO reference into a clean table of IDs (ensembl, refseq, gene_name)
+# Load a TUSCO TSV reference into a clean table of IDs (ensembl, refseq, gene_name)
 load_tusco_reference <- function(tusco_path) {
   tusco_lines <- readLines(tusco_path)
   tusco_data_lines <- tusco_lines[!grepl("^#", tusco_lines)]
@@ -140,8 +146,10 @@ if (length(all_sample_dirs) == 0) {
   stop("No sample directories found in ", isoseq_ar_root)
 }
 
-# Load TUSCO reference once
-tusco_ref <- load_tusco_reference(tusco_file)
+# Load TUSCO references once
+tusco_ref_univ   <- load_tusco_reference(tusco_universal_tsv)
+tusco_ref_brain  <- load_tusco_reference(tusco_brain_tsv)
+tusco_ref_kidney <- load_tusco_reference(tusco_kidney_tsv)
 
 results <- list()
 for (sd in all_sample_dirs) {
@@ -150,17 +158,38 @@ for (sd in all_sample_dirs) {
   if (!file.exists(class_file)) next
 
   classification <- read_tsv_safe(class_file)
-  metrics <- compute_tusco_bigcats(classification, tusco_ref)
+  sample_tissue <- infer_tissue(sample_name)
 
+  # Universal metrics for all samples
+  m_univ <- compute_tusco_bigcats(classification, tusco_ref_univ)
   results[[length(results) + 1]] <- tibble(
     Sample = sample_name,
-    Tissue = infer_tissue(sample_name),
-    TP = metrics$TP,
-    PTP = metrics$PTP,
-    FP = metrics$FP,
-    FN = metrics$FN,
-    id_type = metrics$id_type
+    Tissue = sample_tissue,
+    Type   = "Universal",
+    TP = m_univ$TP, PTP = m_univ$PTP, FP = m_univ$FP, FN = m_univ$FN,
+    id_type = m_univ$id_type
   )
+
+  # Tissue-specific metrics: Brain for B*, Kidney for K*
+  if (sample_tissue == "Brain") {
+    m_brain <- compute_tusco_bigcats(classification, tusco_ref_brain)
+    results[[length(results) + 1]] <- tibble(
+      Sample = sample_name,
+      Tissue = sample_tissue,
+      Type   = "Brain",
+      TP = m_brain$TP, PTP = m_brain$PTP, FP = m_brain$FP, FN = m_brain$FN,
+      id_type = m_brain$id_type
+    )
+  } else if (sample_tissue == "Kidney") {
+    m_kidney <- compute_tusco_bigcats(classification, tusco_ref_kidney)
+    results[[length(results) + 1]] <- tibble(
+      Sample = sample_name,
+      Tissue = sample_tissue,
+      Type   = "Kidney",
+      TP = m_kidney$TP, PTP = m_kidney$PTP, FP = m_kidney$FP, FN = m_kidney$FN,
+      id_type = m_kidney$id_type
+    )
+  }
 }
 
 if (length(results) == 0) stop("No classification files could be read under ", isoseq_ar_root)
@@ -171,12 +200,12 @@ results_df <- bind_rows(results)
 # ------------------------------------------------------------
 long_df <- results_df %>%
   pivot_longer(cols = c(TP, PTP, FP, FN), names_to = "Metric", values_to = "Count") %>%
-  group_by(Sample) %>%
+  group_by(Sample, Type) %>%
   mutate(Total = sum(Count), Percentage = 100 * Count / ifelse(Total == 0, 1, Total)) %>%
   ungroup()
 
 summary_df <- long_df %>%
-  group_by(Tissue, Metric) %>%
+  group_by(Tissue, Type, Metric) %>%
   summarize(
     mean_perc = mean(Percentage, na.rm = TRUE),
     sd_perc = sd(Percentage, na.rm = TRUE),
@@ -191,27 +220,43 @@ write_tsv(long_df, plot_tsv)
 # Plot (match width to fig-5b_with_merge: 7.09 in)
 # ------------------------------------------------------------
 summary_df$Metric <- factor(summary_df$Metric, levels = c("TP", "PTP", "FP", "FN"))
+summary_df$Type <- factor(summary_df$Type, levels = c("Universal", "Brain", "Kidney"))
+long_df$Type <- factor(long_df$Type, levels = c("Universal", "Brain", "Kidney"))
 
-p <- ggplot(summary_df, aes(x = Metric, y = mean_perc, fill = Metric)) +
-  geom_bar(stat = "identity", width = 0.7, color = "white", linewidth = 0.3) +
+position_d <- position_dodge(width = 0.8)
+
+p <- ggplot(summary_df, aes(x = Metric, y = mean_perc, fill = Type)) +
+  # Bars for mean (match fig-.R widths and dodge)
+  geom_bar(stat = "identity", width = 0.6, color = "black", linewidth = 0.2, position = position_d) +
+  # Error bars
   geom_errorbar(aes(ymin = mean_perc - sd_perc, ymax = mean_perc + sd_perc),
-                width = 0.2, linewidth = 0.3) +
+                width = 0.2, linewidth = 0.2, position = position_d) +
+  # Sample points
+  geom_point(data = long_df, aes(x = Metric, y = Percentage, group = Type),
+             position = position_d, size = 0.3, alpha = 0.5, inherit.aes = FALSE) +
   facet_grid(. ~ Tissue, scales = "free_x", space = "free_x") +
   scale_y_continuous(limits = c(0, 100), labels = scales::percent_format(scale = 1), breaks = seq(0, 100, 20)) +
-  scale_fill_manual(values = c(TP = "#2ca02c", PTP = "#9467bd", FP = "#1f77b4", FN = "#d62728")) +
-  labs(x = NULL, y = "Percentage (%)", title = "TUSCO (mouse multi-exon) TP/PTP/FP/FN on Iso-Seq AR") +
-  theme_minimal(base_size = 7) +
+  # Color pattern from fig-.R
+  scale_fill_manual(values = c(
+    "Universal" = "#1C9E77",
+    "Brain"     = "#5893a4",
+    "Kidney"    = "#506f68"
+  )) +
+  labs(x = NULL, y = "Percentage (%)",
+       title = "TP/PTP/FP/FN vs TUSCO universal and tissue sets (Iso-Seq AR)") +
+  theme_classic(base_size = 7) +
   theme(
-    plot.title = element_text(size = 7, hjust = 0.5, face = "bold", margin = margin(b = 6)),
-    axis.title.y = element_text(size = 7, margin = margin(r = 4)),
-    axis.text = element_text(size = 7),
-    strip.text = element_text(size = 7, face = "bold", margin = margin(b = 4)),
+    axis.text.x = element_text(size = 7, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 7),
+    axis.title = element_text(size = 7, face = "bold"),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 7),
+    legend.position = "bottom",
+    strip.text = element_text(size = 7, face = "bold"),
+    strip.background = element_rect(fill = "white", color = "black"),
+    panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
-    panel.grid.major.x = element_blank(),
-    panel.grid.major.y = element_line(color = "grey90", linewidth = 0.3),
-    panel.spacing = unit(0.5, "cm"),
-    plot.margin = margin(4, 4, 4, 4),
-    legend.position = "none"
+    plot.margin = margin(5, 5, 5, 5)
   )
 
 # Save with similar width as fig-5b_with_merge.R
