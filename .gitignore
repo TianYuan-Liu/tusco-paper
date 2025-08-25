@@ -1,0 +1,105 @@
+# ==============================================
+# Comprehensive .gitignore for TUSCO Paper
+# ==============================================
+
+# Large data files (will be handled by Git LFS)
+*.fasta
+*.fastq
+*.fa
+*.fq
+*.gz
+*.bam
+*.sam
+*.bed
+*.bedgraph
+*.wig
+*.bigwig
+*.bigbed
+
+# Large analysis files
+**/nih_all_read_lengths.tsv
+**/sqanti3_corrected.fasta
+**/*_corrected.fasta
+**/*_corrected.genePred
+**/*_corrected.gtf
+
+# Temporary and intermediate files
+*.tmp
+*.temp
+*~
+*.bak
+*.backup
+*.swp
+*.swo
+
+# R specific
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+.Rapp.history
+*_cache/
+/cache/
+
+# Python specific
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# macOS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.cursor/
+
+# Log files
+*.log
+*.out
+*.err
+slurm-*.out
+
+# Large output directories (can be regenerated)
+**/intersection_all_comb/
+**/single_sample/
+**/sqanti3_out/
+
+# Specific large file patterns for this project
+figs/data/nih/**/*.fasta
+figs/data/nih/**/*.tsv
+figs/data/nih/**/sqanti3_*
+figs/data/nih/**/refAnnotation_*
+figs/data/nih/**/*_corrected.*
+figs/data/nih/**/*_classification.txt
+figs/data/nih/**/*_junctions.txt
+figs/data/nih/**/*.genePred
+figs/data/nih/**/*.gff
+
+# Keep small essential files
+!figs/data/nih/generate_intersections_all_comb.py
+!figs/data/nih/select_transcripts.py
+!figs/data/nih/sqanti3_incremental_qc.slurm
+!**/*.R
+!**/*.pdf
+!**/*.png
+!**/*.py
+
+# Documentation and manuscripts
+# (keep these)
