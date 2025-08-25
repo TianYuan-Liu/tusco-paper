@@ -1,0 +1,375 @@
+#!/usr/bin/env Rscript
+#####################################
+#####       TUSCO Report       ######
+#####################################
+### Author: Tianyuan Liu
+### Last Modified: 11/07/2024
+###
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# 1) Load libraries
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+setwd("/Users/tianyuan/Desktop/github_dev/tusco-paper")
+suppressPackageStartupMessages({
+  library(tidyr)
+  library(dplyr)
+  library(readr)
+  library(stringr)
+  library(ComplexUpset)  # Replaced UpSetR with ComplexUpset
+  library(ggplot2)
+})
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# 2) Define file paths/folders
+#    (EDIT paths to match your local environment)
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+# Example argument usage (uncomment if you want to take from commandArgs)
+# args <- commandArgs(trailingOnly = TRUE)
+# class_file <- args[1]
+# tusco_file <- args[2] # Changed from bugsi_file
+# transcript_gtf_file <- args[3]
+# utilities_path <- args[4]
+
+# Hard-code for illustration or adapt:
+parent_dir <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/lrgasp/human" # Use local repo data
+
+classification_folders <- c(
+  "WTC11_cdna_ont",
+  "WTC11_cdna_ont_ls",
+  "WTC11_cdna_pacbio",
+  "WTC11_cdna_pacbio_ls",
+  "WTC11_drna_ont",
+  "WTC11_drna_ont_ls"
+)
+
+classification_filename <- "_classification.txt"
+
+# TUSCO TSV file
+tusco_file <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/tusco/tusco_human.tsv" # Changed from bugsi_file
+
+# Short-read quant
+short_read_quant <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/lrgasp/short_read_quant/human_quant.genes.sf"
+
+# Output folder
+output_dir <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-3/plots" # Output files to plots dir
+
+# Create the directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# 3) Helper: read TUSCO TSV, get TUSCO gene set (no version)
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+read_tusco_genes <- function(tsv_path) {
+  # Robust read of header‑less Tusco annotation (falls back to whitespace if tabs not found)
+  # Adapted from barplot_check_human.R
+  tusco_df <- read_delim(
+    tsv_path,
+    delim = "\\t",
+    col_names = c("ensembl", "transcript", "gene_name", "gene_id_num", "refseq", "prot_refseq"),
+    col_types = cols(.default = "c"),
+    trim_ws = TRUE
+  )
+  if (ncol(tusco_df) == 1) { # Fallback if not tab-delimited
+    message("Falling back to space-delimited reading for TUSCO TSV.")
+    tusco_df <- read_table2(
+      tsv_path,
+      col_names = c("ensembl", "transcript", "gene_name", "gene_id_num", "refseq", "prot_refseq"),
+      col_types = cols(.default = "c")
+    )
+  }
+
+  if (!"ensembl" %in% colnames(tusco_df)) {
+    stop("Tusco TSV must contain 'ensembl' column.")
+  }
+  
+  tusco_genes_raw <- tusco_df %>%
+    mutate(ensembl_id = str_remove(ensembl, "\\..+$")) %>% # remove version from ensembl ID
+    distinct(ensembl_id) %>%
+    pull(ensembl_id)
+  
+  # Filter out invalid gene IDs like "#", empty strings, or NA
+  tusco_genes_filtered <- tusco_genes_raw[!tusco_genes_raw %in% c("#", "") & !is.na(tusco_genes_raw)]
+  
+  message(paste("DEBUG: Raw TUSCO gene IDs count (pre-filtering):", length(tusco_genes_raw)))
+  message(paste("DEBUG: Filtered TUSCO gene IDs count (post-filtering '#', empty, NA):", length(tusco_genes_filtered)))
+  
+  return(tusco_genes_filtered)
+}
+
+tusco_genes <- read_tusco_genes(tusco_file) # Changed from bugsi_genes
+message("Total TUSCO genes: ", length(tusco_genes))
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# 4) Define short-read FNs
+#    A TUSCO gene is found if TPM > 0 in short_read_quant
+#    => FN = TUSCO set - found set
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+short_df <- read_tsv(short_read_quant, comment="#") %>%
+  mutate(gene_id = str_remove(Name, "\\..+$"))  # remove version
+
+short_found <- short_df %>%
+  filter(TPM > 0) %>%
+  distinct(gene_id) %>%
+  pull(gene_id)
+
+short_tusco_found <- dplyr::intersect(tusco_genes, short_found) # Changed from short_bugsi_found
+short_tusco_fn <- dplyr::setdiff(tusco_genes, short_tusco_found) # Changed from short_bugsi_fn
+message("Short-read FN (TUSCO): ", length(short_tusco_fn))
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# 5) Define a function to read a classification file,
+#    then identify which TUSCO genes are "found" by FSM/ISM.
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+get_tusco_fsm_ism_found <- function(class_file, tusco_set) { # Changed from get_bugsi_fsm_ism_found
+  # Read classification file
+  if (!file.exists(class_file)) {
+    stop("Classification file not found: ", class_file)
+  }
+  
+  # 1) Read file
+  df <- read_tsv(class_file, col_types = cols(.default = "c"))
+  # Some versions of SQANTI classification have these columns in a certain order:
+  # isoform, chrom, strand, length, exons, structural_category, associated_gene, ...
+  # We'll rename at least up to "associated_gene":
+  colnames(df)[1:7] <- c("isoform","chrom","strand","length","exons",
+                         "structural_category","associated_gene")
+  
+  # 2) Split out fusions if structural_category == "fusion"
+  #    Actually, in many pipelines, the "associated_gene" might have underscores
+  #    if it's a fusion. You can separate them, but let's do similarly as you do:
+  df_clean <- df %>%
+    filter(structural_category != "fusion") %>%
+    bind_rows(
+      df %>%
+        filter(structural_category == "fusion") %>%
+        separate_rows(associated_gene, sep = "_")
+    )
+  
+  # 3) Remove version from associated_gene
+  df_clean <- df_clean %>%
+    mutate(associated_gene = str_remove(associated_gene, "\\.\\d+$"))
+  
+  # 4) "Found" = gene that appears with structural_category in {FSM, ISM}
+  #    full-splice_match, incomplete-splice_match
+  found_genes <- df_clean %>%
+    filter(structural_category %in% c("full-splice_match", "incomplete-splice_match")) %>%
+    distinct(associated_gene) %>%
+    pull(associated_gene)
+  
+  # 5) Intersect with TUSCO set => these are the TUSCO genes that are "found"
+  tusco_found <- dplyr::intersect(tusco_set, found_genes) # Changed from bugsi_found
+  return(tusco_found)
+}
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# 6) For each classification folder, define FN = TUSCO - found
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+fn_list <- list()
+
+for (folder in classification_folders) {
+  class_file <- file.path(parent_dir, folder, paste0(folder, classification_filename))
+  found_genes_this <- get_tusco_fsm_ism_found(class_file, tusco_genes) # Changed from get_bugsi_fsm_ism_found and bugsi_genes
+  fn_this <- dplyr::setdiff(tusco_genes, found_genes_this) # Changed from bugsi_genes
+  fn_list[[folder]] <- fn_this
+  
+  message(folder, " => Found (TUSCO): ", length(found_genes_this),
+          ", FN (TUSCO): ", length(fn_this))
+}
+
+# Finally add short_read to the list
+fn_list[["short_read"]] <- short_tusco_fn # Changed from short_bugsi_fn
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# 7) Improve labels for UpSet
+#    Remove underscores, fix ONT->ONT, pacbio->PacBio, etc.
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+pretty_label <- function(x) {
+  # 0) remove WTC11 prefix if present
+  out <- str_remove(x, "^WTC11_")
+  # 1) remove underscores
+  out <- str_replace_all(out, "_", " ")
+  # 2) "ont" -> "ONT", "pacbio" -> "PacBio"
+  out <- str_replace_all(out, "(?i)ont", "ONT")       # case-insensitive
+  out <- str_replace_all(out, "(?i)pacbio", "PacBio")
+  # 3) Capitalize Short read
+  out <- str_replace(out, "short read", "Short Read")
+  return(out)
+}
+
+original_names <- names(fn_list)
+nice_names <- sapply(original_names, pretty_label, USE.NAMES=FALSE)
+
+# rename in the list, then create the UpSet data
+names(fn_list) <- nice_names
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# 8) Create an UpSet plot using ComplexUpset & improve the look
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+# Convert the list of false negatives into a format suitable for ComplexUpset
+# Using fromList to create a binary incidence matrix
+upset_data <- UpSetR::fromList(fn_list)
+
+# Define the order of sets (reverse order so "Short read" is last)
+sets_order <- rev(names(fn_list))
+
+# Create the UpSet plot using ComplexUpset & improve the look
+p <- upset(
+  upset_data,
+  width_ratio = 0.2,  # Keep width ratio for now
+  height_ratio = 0.7, # Adjust height ratio (smaller value makes matrix taller relative to bars)
+  intersect = sets_order,
+  keep_empty_groups=TRUE, wrap=TRUE, set_sizes=FALSE,
+  base_annotations = list(
+    # Use newlines for the multi-line label above bars
+    'Intersect\\nFN TUSCO\\nGenes' = intersection_size( # Changed from BUGSI
+      counts = TRUE # Rely on defaults for mapping when counts=TRUE
+    )
+  )
+) +
+  # Remove title, subtitle, caption by setting them to NULL
+  labs(
+    title = NULL,
+    subtitle = NULL,
+    caption = NULL,
+    y = "TUSCO\\n(Human)" # Add the Y-axis label, Changed from BUGSI
+  ) +
+  theme_minimal(base_size = 7) + # Use theme_minimal and set base font size
+  theme(
+    text = element_text(size = 7),
+    axis.text = element_text(size = 7),
+    axis.title.y = element_text(size = 7, angle = 90, vjust = 0.5), # Style y-axis title
+    strip.text.x = element_text(size = 7), # Control size of labels above matrix intersections
+    plot.margin = margin(5, 5, 5, 5), # Adjust plot margins if needed
+    legend.position = "none"  # Remove legend
+  )
+
+# Save the plot to PDF
+if (FALSE) ggsave(
+  filename = file.path(output_dir, "figure3d-human.pdf"), # Disabled per request
+  plot = p,
+  width = 4.5, # Adjusted width slightly
+  height = 3.5, # Adjusted height slightly
+  units = "in",
+  device = cairo_pdf, # Use cairo_pdf for better font embedding
+  dpi = 300
+)
+
+message("UpSet plot not generated per request.")
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# 9) Print out the intersection of all sets (common FNs)
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+common_fn <- Reduce(dplyr::intersect, fn_list)
+message("Number of common FN TUSCO genes across all sets: ", length(common_fn))
+
+# ---- START DEBUG ----
+message("DEBUG: Content of common_fn below:")
+if (length(common_fn) > 0) {
+  print(common_fn)
+} else {
+  message("DEBUG: common_fn is empty.")
+}
+message("DEBUG: Structure of common_fn below:")
+print(str(common_fn))
+# ---- END DEBUG ----
+
+# Save to file
+common_fn_file <- file.path(output_dir, "common_tusco_fn_genes.txt")
+
+# ---- Ensure a clean write by removing the file if it exists ----
+if (file.exists(common_fn_file)) {
+  removed_ok <- file.remove(common_fn_file)
+  if (removed_ok) {
+    message("DEBUG: Removed existing common_fn_file successfully.")
+  } else {
+    message("DEBUG: Failed to remove existing common_fn_file.")
+  }
+}
+# ---- End clean write ----
+
+writeLines(common_fn, con = common_fn_file)
+message("Common FN TUSCO genes saved to: ", common_fn_file)
+
+message("Done.")
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# 10) Plot distribution of FNs by number of samples shared
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+# Combine all FN genes from all samples into a single vector
+all_fn_genes <- unlist(fn_list)
+
+# Count how many times each gene appears (i.e., in how many samples it's an FN)
+gene_counts <- table(all_fn_genes)
+
+# Count how many genes appear in exactly 1 sample, 2 samples, etc.
+sample_counts <- table(gene_counts)
+
+# Convert to a data frame for plotting
+sample_counts_df <- as.data.frame(sample_counts)
+colnames(sample_counts_df) <- c("num_samples_shared", "num_genes")
+
+# Ensure num_samples_shared is numeric (factor by default from table)
+sample_counts_df$num_samples_shared <- as.numeric(as.character(sample_counts_df$num_samples_shared))
+
+# Ensure all sample counts from 1 to N are present, even if count is 0
+num_total_samples <- length(fn_list)
+all_possible_counts <- data.frame(num_samples_shared = 1:num_total_samples)
+
+plot_df <- merge(all_possible_counts, sample_counts_df, by = "num_samples_shared", all.x = TRUE)
+plot_df$num_genes[is.na(plot_df$num_genes)] <- 0 # Replace NA with 0 for missing counts
+
+
+# Create the bar plot
+p_dist <- ggplot(plot_df, aes(x = factor(num_samples_shared), y = num_genes)) +
+  geom_bar(stat = "identity", fill = "#A8D5A0") + # Changed fill color to user specified hex code
+  labs(
+    title = NULL, # Removed title
+    x = "#Sample", # Updated x-axis label
+    y = "FN TUSCO Genes" # Updated y-axis label, Changed from BUGSI
+  ) +
+  # Add padding to the y-axis to ensure labels fit
+  # ylim(0, max(plot_df$num_genes, na.rm = TRUE) * 1.15) + # Removed dynamic ylim
+  # Set fixed y-axis scale and breaks
+  scale_y_continuous(breaks = c(0, 5, 10, 15), limits = c(0, 15)) +
+  theme_minimal(base_size = 7) + # Matched base size
+  theme(
+    text = element_text(size = 7),
+    axis.text = element_text(size = 7),
+    axis.title = element_text(size = 7),
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    plot.margin = margin(5, 5, 5, 5), # Matched margins
+    # Remove background elements
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    # Ensure axis lines are still present if desired (optional, theme_minimal keeps them)
+    # axis.line = element_line(colour = "black")
+  ) +
+  # Add text labels on top of bars
+  geom_text(aes(label = num_genes), vjust = -0.5, size = 2) # Adjusted text size and position
+
+# Save the plot
+dist_plot_file <- file.path(output_dir, "figure3d-human.pdf") # Secondary output
+ggsave(
+  filename = dist_plot_file,
+  plot = p_dist,
+  width = 2, # Matched width
+  height = 1.2, # Matched height
+  units = "in",
+  device = cairo_pdf, # Matched device
+  dpi = 300
+)
+
+message("FN TUSCO distribution bar plot saved to: ", dist_plot_file) # Changed from BUGSI
