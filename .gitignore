@@ -92,6 +92,22 @@ figs/data/nih/**/*_junctions.txt
 figs/data/nih/**/*.genePred
 figs/data/nih/**/*.gff
 
+# Bulky data subtrees to avoid accidental staging
+# - LRGASP datasets include massive SQANTI3 and raw read outputs
+figs/data/lrgasp/**
+
+# - NIH unions/intersections can produce very large GTFs
+figs/data/nih/union/**/*.gtf
+figs/data/nih/intersection/**/*.gtf
+
+# - Reference annotations are typically huge; ignore heavy formats
+figs/data/reference/**/*.gtf
+figs/data/reference/**/*.gff
+figs/data/reference/**/*.{fa,fasta,fastq,fq,fa.gz,fasta.gz}
+
+# - Other bulky sources
+figs/data/alphagenome/**
+
 # Keep small essential files
 !figs/data/nih/generate_intersections_all_comb.py
 !figs/data/nih/select_transcripts.py
@@ -100,6 +116,9 @@ figs/data/nih/**/*.gff
 !**/*.pdf
 !**/*.png
 !**/*.py
+
+# If you need to commit a specific file from an ignored path, force-add it:
+#   git add -f path/to/file
 
 # Documentation and manuscripts
 # (keep these)
