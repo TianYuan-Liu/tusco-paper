@@ -20,11 +20,29 @@ suppressPackageStartupMessages({
   library(png)
 })
 
+# Helper to resolve preferred paths: try absolute figs/data, then repo-relative figs/data
+resolve_path <- function(candidates, is_dir = FALSE) {
+  for (p in candidates) {
+    if (!is_dir && file.exists(p)) return(p)
+    if (is_dir && dir.exists(p)) return(p)
+  }
+  return(candidates[[1]])
+}
+
 # Define global variables
 # Paths to fixed files (adjust as needed)
-sirv.file <- '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/spike-ins/lrgasp_sirvs.gtf'
-tusco.file <- '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/tusco/tusco_human.tsv' 
-data_dir <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/lrgasp/human"
+sirv.file <- resolve_path(c(
+  '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/spike-ins/lrgasp_sirvs.gtf',
+  file.path('..','data','spike-ins','lrgasp_sirvs.gtf')
+))
+tusco.file <- resolve_path(c(
+  '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/tusco/tusco_human.tsv',
+  file.path('..','data','tusco','tusco_human.tsv')
+))
+data_dir <- resolve_path(c(
+  '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/lrgasp/human',
+  file.path('..','data','lrgasp','human')
+), is_dir = TRUE)
 
 # Pipelines in the desired order:
 # Row 1: ES dRNA ONT, ES cDNA ONT, ES cDNA PacBio
@@ -129,12 +147,13 @@ process_pipeline <- function(pipeline_prefix) {
     filter(grepl("SIRV", chrom))
   
   SIRV_RM <- SIRV_transcripts %>%
+    mutate(mono_thresh = ifelse(!is.na(ref_length) & ref_length > 3000, 100, 50)) %>%
     filter(
       subcategory == "reference_match" |
-        (subcategory == "mono-exon" &
-           ref_exons == 1 &
-           abs(diff_to_TSS) < 50 &
-           abs(diff_to_TTS) < 50)
+      (!is.na(ref_length) & ref_length > 3000 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= 100 & abs(diff_to_TTS) <= 100) |
+      (subcategory == "mono-exon" & ref_exons == 1 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= mono_thresh & abs(diff_to_TTS) <= mono_thresh)
     )
   
   TP_sirv <- SIRV_RM
@@ -167,18 +186,23 @@ process_pipeline <- function(pipeline_prefix) {
   redundancy_sirv <- if (unique_tp_ptp_sirv > 0) fsm_ism_count_sirv / unique_tp_ptp_sirv else NA
   
   SIRV_only <- SIRV_transcripts %>%
-    mutate(subcategory = case_when(
-      subcategory == "reference_match" ~ "Reference match",
-      # Treat qualifying mono-exon as Reference match as well
-      subcategory == "mono-exon" & ref_exons == 1 & abs(diff_to_TSS) < 50 & abs(diff_to_TTS) < 50 ~ "Reference match",
-      subcategory == "alternative_3end" ~ "Alternative 3'end",
-      subcategory == "alternative_5end" ~ "Alternative 5'end",
-      subcategory == "alternative_3end5end" ~ "Alternative 3'5'end",
-      TRUE ~ subcategory
-    )) %>%
+    mutate(
+      subcategory = case_when(
+        subcategory == "reference_match" ~ "Reference match",
+        subcategory == "mono-exon" & ref_exons == 1 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+          abs(diff_to_TSS) <= ifelse(!is.na(ref_length) & ref_length > 3000, 100, 50) &
+          abs(diff_to_TTS) <= ifelse(!is.na(ref_length) & ref_length > 3000, 100, 50) ~ "Reference match",
+        subcategory == "alternative_3end" ~ "Alternative 3'end",
+        subcategory == "alternative_5end" ~ "Alternative 5'end",
+        subcategory == "alternative_3end5end" ~ "Alternative 3'5'end",
+        TRUE ~ subcategory
+      ),
+      near_ends_long = !is.na(ref_length) & ref_length > 3000 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+                       abs(diff_to_TSS) <= 100 & abs(diff_to_TTS) <= 100
+    ) %>%
     mutate(
       big_category = case_when(
-        structural_category == "full-splice_match" & subcategory == "Reference match" ~ "TP",
+        structural_category == "full-splice_match" & (subcategory == "Reference match" | near_ends_long) ~ "TP",
         (structural_category == "full-splice_match" & subcategory %in% c("Alternative 3'end","Alternative 5'end","Alternative 3'5'end")) ~ "PTP",
         structural_category == "incomplete-splice_match" ~ "PTP",
         structural_category %in% c("novel_in_catalog","novel_not_in_catalog","genic_intron",
@@ -315,12 +339,13 @@ process_pipeline <- function(pipeline_prefix) {
     filter(associated_gene %in% annotation_data_tusco[[top_id_type_tusco]])
 
   TUSCO_RM <- TUSCO_transcripts %>%
+    mutate(mono_thresh = ifelse(!is.na(ref_length) & ref_length > 3000, 100, 50)) %>%
     filter(
       subcategory == "reference_match" |
-        (subcategory == "mono-exon" &
-           ref_exons == 1 &
-           abs(diff_to_TSS) < 50 &
-           abs(diff_to_TTS) < 50)
+      (!is.na(ref_length) & ref_length > 3000 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= 100 & abs(diff_to_TTS) <= 100) |
+      (subcategory == "mono-exon" & ref_exons == 1 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= mono_thresh & abs(diff_to_TTS) <= mono_thresh)
     )
 
   TP_tusco  <- TUSCO_RM
@@ -353,16 +378,20 @@ process_pipeline <- function(pipeline_prefix) {
   redundancy_tusco               <- if (unique_tp_ptp_tusco > 0) fsm_ism_count_tusco / unique_tp_ptp_tusco else NA
 
   TUSCO_only <- TUSCO_transcripts %>%
-    mutate(subcategory = case_when(
-      subcategory == "reference_match"     ~ "Reference match",
-      subcategory == "alternative_3end"    ~ "Alternative 3'end",
-      subcategory == "alternative_5end"    ~ "Alternative 5'end",
-      subcategory == "alternative_3end5end"~ "Alternative 3'5'end",
-      TRUE ~ subcategory
-    )) %>%
+    mutate(
+      subcategory = case_when(
+        subcategory == "reference_match"     ~ "Reference match",
+        subcategory == "alternative_3end"    ~ "Alternative 3'end",
+        subcategory == "alternative_5end"    ~ "Alternative 5'end",
+        subcategory == "alternative_3end5end"~ "Alternative 3'5'end",
+        TRUE ~ subcategory
+      ),
+      near_ends_long = !is.na(ref_length) & ref_length > 3000 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+                       abs(diff_to_TSS) <= 100 & abs(diff_to_TTS) <= 100
+    ) %>%
     mutate(
       big_category = case_when(
-        structural_category == "full-splice_match" & subcategory == "Reference match"                               ~ "TP",
+        structural_category == "full-splice_match" & (subcategory == "Reference match" | near_ends_long)                               ~ "TP",
         (structural_category == "full-splice_match" & subcategory %in% c("Alternative 3'end","Alternative 5'end","Alternative 3'5'end")) ~ "PTP",
         structural_category == "incomplete-splice_match"                                                            ~ "PTP",
         structural_category %in% c("novel_in_catalog","novel_not_in_catalog","genic_intron",
@@ -512,7 +541,17 @@ process_pipeline <- function(pipeline_prefix) {
   
   list(
     radar = radar_plot,
-    combined = p_combined
+    combined = p_combined,
+    pipeline = pipeline_prefix,
+    sirv_plot = plot_data_sirv,
+    tusco_plot = plot_data_tusco,
+    metrics = data.frame(
+      metric = metrics_labels,
+      sirv = metrics_values_sirv,
+      tusco = metrics_values_tusco,
+      pipeline = pipeline_prefix,
+      stringsAsFactors = FALSE
+    )
   )
 }
 
@@ -562,7 +601,34 @@ panel_a <- plot_grid(plotlist = radar_plots, ncol = 6, align = "hv")
 # Add the legend at the bottom of panel a
 panel_a_with_legend <- plot_grid(panel_a, radar_legend, ncol = 1, rel_heights = c(1, 0.1))
 
-# Save Panel A to PDF (optional)
-pdf(file = "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-3/plots/figure3a-human.pdf", width = 24, height = 4) # Adjusted width and height for single row
+# Save Panel A PDF to ./plot and export underlying TSV to ./tsv
+plot_dir <- file.path(".", "plot")
+tsv_dir  <- file.path(".", "tsv")
+if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
+if (!dir.exists(tsv_dir))  dir.create(tsv_dir,  recursive = TRUE)
+
+pdf_path <- file.path(plot_dir, "figure3a-human.pdf")
+tsv_path <- file.path(tsv_dir,  "figure3a-human.tsv")
+
+pdf(file = pdf_path, width = 24, height = 4)
 print(panel_a_with_legend)
 dev.off()
+
+# Consolidate underlying data for TSV
+bar_data <- dplyr::bind_rows(lapply(results, function(x) {
+  dplyr::bind_rows(
+    dplyr::mutate(x$sirv_plot, Type = "SIRVs", pipeline = x$pipeline),
+    dplyr::mutate(x$tusco_plot, Type = "TUSCO", pipeline = x$pipeline)
+  )
+}))
+
+metrics_data <- dplyr::bind_rows(lapply(results, function(x) x$metrics))
+
+bar_data <- bar_data %>% mutate(figure_id = "fig-3", panel_id = "3a-human", record_type = "bar_distribution")
+metrics_data <- metrics_data %>% mutate(figure_id = "fig-3", panel_id = "3a-human", record_type = "radar_metrics")
+
+tsv_out <- dplyr::bind_rows(
+  bar_data,
+  metrics_data
+)
+readr::write_tsv(tsv_out, tsv_path)

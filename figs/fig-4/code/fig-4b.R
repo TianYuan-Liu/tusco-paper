@@ -13,26 +13,69 @@ suppressPackageStartupMessages({
   library(fmsb)
   library(cowplot)
   library(grid)
-  library(png)
+  library(ggplotify)
 })
+# Helper to draw a group header with a bracket line below the title
+make_group_header <- function(title_text, title_size = 9) {
+  ggplot() +
+    annotate("text", x = 0.5, y = 0.75, label = title_text, family = "sans", fontface = "bold", size = title_size/3) +
+    annotate("segment", x = 0.05, xend = 0.95, y = 0.12, yend = 0.12, linewidth = 0.35) +
+    annotate("segment", x = 0.05, xend = 0.05, y = 0.12, yend = 0.02, linewidth = 0.35) +
+    annotate("segment", x = 0.95, xend = 0.95, y = 0.12, yend = 0.02, linewidth = 0.35) +
+    xlim(0, 1) + ylim(0, 1) + theme_void()
+}
 
 # ------------------------------------------------------------------
 # Paths (updated to NIH data and repo plots directory)
 # ------------------------------------------------------------------
-# TUSCO references (leave as-is; required to compute metrics)
-tusco_human_file <- "/Users/tianyuan/Desktop/GitHub/TUSCO/reference_dataset/tusco_human_multi_exon.tsv"
-tusco_mouse_file <- "/Users/tianyuan/Desktop/GitHub/TUSCO/reference_dataset/tusco_mouse_multi_exon.tsv"
-
-# Base data directory (lrgasp data)
-base_data_dir    <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/lrgasp/tusco_novel_evl"
-
-# Output directory (repo plots folder)
-output_dir       <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-4/plots"
-
-# Ensure output directory exists
-if (!dir.exists(output_dir)) {
-  dir.create(output_dir, recursive = TRUE)
+# Localize all paths to this fig-4 folder only
+argv <- commandArgs(trailingOnly = FALSE)
+script_path <- tryCatch({
+  sub("^--file=", "", argv[grep("^--file=", argv)][1])
+}, error = function(e) NA_character_)
+if (is.na(script_path) || script_path == "") {
+  # Fallback: assume working directory contains fig-4/code
+  script_path <- file.path(getwd(), "figs", "fig-4", "code", "fig-4b.R")
 }
+fig_dir <- normalizePath(file.path(dirname(script_path), ".."), winslash = "/", mustWork = FALSE)
+figs_dir <- normalizePath(file.path(fig_dir, ".."), winslash = "/", mustWork = FALSE) # repository figs/
+
+first_existing <- function(paths) {
+  for (p in paths) {
+    if (!is.na(p) && !is.null(p) && file.exists(p)) return(p)
+  }
+  # return first candidate even if missing (to keep consistent path intent)
+  if (length(paths) > 0) return(paths[[1]]) else return(NA_character_)
+}
+
+first_existing_dir <- function(paths) {
+  for (p in paths) {
+    if (!is.na(p) && !is.null(p) && dir.exists(p)) return(p)
+  }
+  if (length(paths) > 0) return(paths[[1]]) else return(NA_character_)
+}
+
+# TUSCO references: prefer local fig-4/data, fallback to shared figs/data/tusco
+tusco_human_file <- first_existing(list(
+  file.path(fig_dir,  "data", "tusco_human_multi_exon.tsv"),
+  file.path(figs_dir, "data", "tusco", "tusco_human_multi_exon.tsv")
+))
+tusco_mouse_file <- first_existing(list(
+  file.path(fig_dir,  "data", "tusco_mouse_multi_exon.tsv"),
+  file.path(figs_dir, "data", "tusco", "tusco_mouse_multi_exon.tsv")
+))
+
+# Base data directory: prefer local fig-4/data, fallback to shared figs/data/lrgasp/tusco_novel_evl
+base_data_dir <- first_existing_dir(list(
+  file.path(fig_dir,  "data", "lrgasp", "tusco_novel_evl"),
+  file.path(figs_dir, "data", "lrgasp", "tusco_novel_evl")
+))
+
+# Output directories (restricted to fig-4)
+output_dir <- file.path(fig_dir, "plot")
+tsv_dir    <- file.path(fig_dir, "tsv")
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+if (!dir.exists(tsv_dir)) dir.create(tsv_dir, recursive = TRUE)
 
 # ------------------------------------------------------------------
 # Helpers retained (minimal set required to render the overall grid)
@@ -103,12 +146,18 @@ calculate_tusco_metrics <- function(classification_data, tusco_annotation_df, rT
     filter(associated_gene %in% tusco_annotation_df[[top_id_type]])
 
   TUSCO_RM <- tusco_transcripts %>%
+    mutate(mono_thresh = ifelse(!is.na(ref_length) & ref_length > 3000, 100, 50)) %>%
     filter(
+      # Multi-exon Rule 1: reference match
       subcategory == "reference_match" |
-        (subcategory == "mono-exon" &
-           ref_exons == 1 &
-           abs(diff_to_TSS) < 50 &
-           abs(diff_to_TTS) < 50)
+      # Multi-exon Rule 2: long reference and both ends within 100bp
+      (!is.na(ref_length) & ref_length > 3000 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= 100 & abs(diff_to_TTS) <= 100) |
+      # Single-exon Rule 1: FSM mono-exon is TP
+      (structural_category == "full-splice_match" & ref_exons == 1) |
+      # Single-exon Rule 2: mono-exon with dynamic end threshold
+      (subcategory == "mono-exon" & ref_exons == 1 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= mono_thresh & abs(diff_to_TTS) <= mono_thresh)
     )
   TP_tusco <- TUSCO_RM
   TP_TUSCO_unique_genes <- unique(TP_tusco$associated_gene)
@@ -155,6 +204,20 @@ calculate_tusco_metrics <- function(classification_data, tusco_annotation_df, rT
 }
 
 # Render a single radar chart grob for a given pipeline/sample/species
+metrics_records <- list()
+
+# helper: append a metrics record safely
+append_record <- function(rec_df) {
+  idx <- length(metrics_records) + 1L
+  metrics_records[[idx]] <<- rec_df
+}
+
+sanitize_names <- function(x) {
+  x <- gsub("/", "_", x, fixed = TRUE)
+  x <- gsub("-", "_", x, fixed = TRUE)
+  x
+}
+
 process_and_plot_pipeline_pair <- function(pipeline_prefix, species, tusco_ref_filepath, data_dir_base, is_ml_processing = FALSE, omit_title = TRUE) {
   main_pipeline_type <- basename(data_dir_base)
 
@@ -200,7 +263,16 @@ process_and_plot_pipeline_pair <- function(pipeline_prefix, species, tusco_ref_f
     }
   }
   if (is.null(tusco_df) || nrow(tusco_df) == 0) {
-    return(ggdraw() + draw_label("No TUSCO ref", fontface = "bold"))
+    append_record(data.frame(
+      figure_id = "fig-4b",
+      pipeline  = main_pipeline_type,
+      sample    = pipeline_prefix,
+      species   = species,
+      eval_type = NA_character_,
+      status    = "no_tusco_ref",
+      stringsAsFactors = FALSE
+    ))
+    return(ggdraw())
   }
 
   tusco_annotation_for_calc <- tusco_df %>% select(any_of(c("ensembl", "refseq", "gene_name"))) %>% distinct()
@@ -216,86 +288,114 @@ process_and_plot_pipeline_pair <- function(pipeline_prefix, species, tusco_ref_f
   metrics_novel <- if (!is.null(novel_classification_data)) calculate_tusco_metrics(novel_classification_data, tusco_annotation_for_calc, rTUSCO) else NULL
 
   if (is.null(metrics_ref) && is.null(metrics_novel)) {
-    return(ggdraw() + draw_label("No Valid Data", fontface = "bold"))
+    return(ggdraw())
   }
 
   if (!is.null(metrics_ref) && !is.null(metrics_novel)) {
     radar_data_df <- rbind(rep(100, 6), rep(0, 6), metrics_ref, metrics_novel)
     plot_colors <- rep(if (species == "human") "#a8d5a0" else "#1b9e77", 2)
     plot_linetypes <- c(1, 2)
+    # log metrics
+    mref <- as.list(metrics_ref)
+    names(mref) <- sanitize_names(names(mref))
+    mnov <- as.list(metrics_novel)
+    names(mnov) <- sanitize_names(names(mnov))
+    append_record(as.data.frame(c(
+      list(figure_id = "fig-4b", pipeline = main_pipeline_type, sample = pipeline_prefix, species = species, eval_type = "ref", status = "ok"),
+      mref
+    ), check.names = FALSE, stringsAsFactors = FALSE))
+    append_record(as.data.frame(c(
+      list(figure_id = "fig-4b", pipeline = main_pipeline_type, sample = pipeline_prefix, species = species, eval_type = "novel", status = "ok"),
+      mnov
+    ), check.names = FALSE, stringsAsFactors = FALSE))
   } else if (!is.null(metrics_ref)) {
     radar_data_df <- rbind(rep(100, 6), rep(0, 6), metrics_ref)
     plot_colors <- if (species == "human") "#a8d5a0" else "#1b9e77"
     plot_linetypes <- 1
+    mref <- as.list(metrics_ref)
+    names(mref) <- sanitize_names(names(mref))
+    append_record(as.data.frame(c(
+      list(figure_id = "fig-4b", pipeline = main_pipeline_type, sample = pipeline_prefix, species = species, eval_type = "ref", status = "ok"),
+      mref
+    ), check.names = FALSE, stringsAsFactors = FALSE))
   } else {
     radar_data_df <- rbind(rep(100, 6), rep(0, 6), metrics_novel)
     plot_colors <- if (species == "human") "#a8d5a0" else "#1b9e77"
     plot_linetypes <- 2
+    mnov <- as.list(metrics_novel)
+    names(mnov) <- sanitize_names(names(mnov))
+    append_record(as.data.frame(c(
+      list(figure_id = "fig-4b", pipeline = main_pipeline_type, sample = pipeline_prefix, species = species, eval_type = "novel", status = "ok"),
+      mnov
+    ), check.names = FALSE, stringsAsFactors = FALSE))
   }
 
   colnames(radar_data_df) <- c("Sn", "nrPre", "1/red", "1-FDR", "PDR", "rPre")
   radar_data_df <- as.data.frame(radar_data_df)
 
-  # Capture radarchart as a grob
-  plot_grob <- NULL
+  # Capture radarchart as a grob without writing temp files
+  plot_obj <- NULL
   tryCatch({
-    current_dev <- grDevices::dev.cur()
-    temp_plot_file <- tempfile(fileext = ".png")
-    png(temp_plot_file, width = 5, height = 5, units = "in", res = 200, bg = "white")
-    par(mar = c(0.5, 0.5, if (omit_title) 0.5 else 1.5, 0.5), family = "sans", font = 2, cex = 7/12)
-    radarchart(radar_data_df,
-               axistype = 0,
-               pcol = plot_colors,
-               pfcol = NA,
-               plwd = 8,
-               plty = plot_linetypes,
-               pty = 16,
-               cglcol = "grey", cglty = 1, cglwd = 1.5,
-               axislabcol = "black",
-               vlabels = rep("", ncol(radar_data_df)),
-               vlcex = 0,
-               caxislabels = NULL,
-               centerzero = FALSE,
-               title = if (omit_title) "" else pipeline_prefix)
-    dev.off()
-    img_grob <- grid::rasterGrob(png::readPNG(temp_plot_file), interpolate = TRUE)
-    file.remove(temp_plot_file)
-    if (current_dev > 1) grDevices::dev.set(current_dev)
-    plot_grob <- ggdraw() + draw_grob(img_grob)
+    plot_obj <- ggplotify::as.ggplot(function() {
+      op <- par(mar = c(0.2, 0.2, if (omit_title) 0.2 else 1.0, 0.2), family = "sans", font = 2, cex = 0.5)
+      on.exit(par(op), add = TRUE)
+      radarchart(radar_data_df,
+                 axistype = 0,
+                 pcol = plot_colors,
+                 pfcol = NA,
+                 plwd = 1.2,
+                 plty = plot_linetypes,
+                 pty = 16,
+                 cglcol = "grey", cglty = 1, cglwd = 0.35,
+                 axislabcol = "black",
+                 vlabels = rep("", ncol(radar_data_df)),
+                 vlcex = 0,
+                 caxislabels = NULL,
+                 centerzero = FALSE,
+                 title = if (omit_title) "" else pipeline_prefix)
+    }) +
+      coord_fixed(ratio = 1) +
+      theme_void() +
+      theme(plot.margin = unit(rep(0.5, 4), "mm"))
   }, error = function(e) {
-    plot_grob <<- ggdraw() + draw_label("Plot Error", fontface = "bold")
+    plot_obj <<- ggdraw() + draw_label("Plot Error", fontface = "bold")
   })
-  return(plot_grob)
+  return(plot_obj)
 }
 
 # ------------------------------------------------------------------
 # Build legend used underneath the grid
 # ------------------------------------------------------------------
-legend_data <- data.frame(
-  Type = factor(c("Ref Evl", "Novel Evl"), levels = c("Ref Evl", "Novel Evl")),
-  Linetype = factor(c("solid", "dashed"), levels = c("solid", "dashed")),
-  Color = factor(c("human_color", "human_color"))
+legend_line_df <- data.frame(
+  Annotation = factor(c("Gencode reference annotation", "TUSCO-sim annotation"),
+                      levels = c("Gencode reference annotation", "TUSCO-sim annotation")),
+  x = 0, xend = 1, y = c(1, 2), yend = c(1, 2)
 )
-legend_plot_color <- "#a8d5a0"
-
-p_legend_dummy <- ggplot(legend_data, aes(x = 1, y = Type, linetype = Type, color = Color)) +
-  geom_line(linewidth = 1.5) +
-  geom_point(aes(shape = Type), size = 4, stroke = 1.5) +
-  scale_linetype_manual(values = c("Ref Evl" = "solid", "Novel Evl" = "dashed")) +
-  scale_color_manual(values = c("human_color" = legend_plot_color)) +
-  scale_shape_manual(values = c("Ref Evl" = 16, "Novel Evl" = 16)) +
-  guides(linetype = guide_legend(title = NULL, override.aes = list(linewidth = 1.5)),
-         color = guide_legend(title = NULL, override.aes = list(color = legend_plot_color)),
-         shape = guide_legend(title = NULL, override.aes = list(shape = 16))) +
+p_legend_lines <- ggplot(legend_line_df) +
+  geom_segment(aes(x = x, xend = xend, y = y, yend = yend, linetype = Annotation),
+               linewidth = 1.2, color = "black") +
+  scale_linetype_manual(values = c("Gencode reference annotation" = "solid",
+                                   "TUSCO-sim annotation" = "dashed")) +
   theme_void() +
   theme(legend.position = "bottom",
         legend.title = element_blank(),
-        legend.text = element_text(size = 12, family = "sans"),
-        legend.key.width = unit(1.5, "cm"),
-        legend.direction = "horizontal",
-        legend.box = "horizontal",
-        legend.spacing.x = unit(0.5, "cm"))
-radar_plot_legend <- cowplot::get_legend(p_legend_dummy)
+        legend.text = element_text(size = 10, family = "sans"))
+legend_linetype <- cowplot::get_legend(p_legend_lines)
+
+legend_species_df <- data.frame(
+  Species = factor(c("Human", "Mouse"), levels = c("Human", "Mouse")),
+  x = 1, y = c(1, 2)
+)
+p_legend_species <- ggplot(legend_species_df, aes(x = x, y = y, color = Species)) +
+  geom_point(shape = 15, size = 5) +
+  scale_color_manual(values = c("Human" = "#a8d5a0", "Mouse" = "#1b9e77")) +
+  theme_void() +
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10, family = "sans"))
+legend_species <- cowplot::get_legend(p_legend_species)
+
+radar_plot_legend <- plot_grid(legend_linetype, legend_species, ncol = 2, rel_widths = c(2, 1))
 
 # ------------------------------------------------------------------
 # Generate the overall 8x5 radar grid and save as figure4.pdf
@@ -314,13 +414,12 @@ overall_sample_prefixes <- c(
   "es_captrap_ont"
 )
 
-# Pipeline rows
+# Pipeline rows (updated labels, removed All-ref)
 pipeline_row_specs <- list(
-  list(row_label = "Bambu",     pipeline_dir = "bambu_sq3",     is_ml = FALSE),
-  list(row_label = "Stringtie", pipeline_dir = "stringtie_sq3",  is_ml = FALSE),
-  list(row_label = "Flair",     pipeline_dir = "flair_sq3",     is_ml = FALSE),
-  list(row_label = "All-ref",   pipeline_dir = "all-ref_sq3",   is_ml = FALSE),
-  list(row_label = "IsoSeq",    pipeline_dir = "isoseq_sq3",    is_ml = FALSE)
+  list(row_label = "Bambu",              pipeline_dir = "bambu_sq3",     is_ml = FALSE),
+  list(row_label = "Stringtie2",         pipeline_dir = "stringtie_sq3",  is_ml = FALSE),
+  list(row_label = "Flair",              pipeline_dir = "flair_sq3",     is_ml = FALSE),
+  list(row_label = "Isoseq + SQ3 ML",    pipeline_dir = "isoseq_sq3",    is_ml = FALSE)
 )
 
 # Collect grobs row-wise
@@ -344,36 +443,76 @@ for (row_spec in pipeline_row_specs) {
   }
 }
 
-# Column labels
-column_labels <- c("WTC11 CapTrap PacBio", "WTC11 cDNA PacBio", "WTC11 cDNA ONT", "WTC11 CapTrap ONT",
-                   "ES CapTrap PacBio", "ES cDNA PacBio", "ES cDNA ONT", "ES CapTrap ONT")
-column_label_grobs <- lapply(column_labels, function(txt) {
-  ggdraw() + draw_label(txt, fontface = "bold", size = 7, fontfamily = "sans")
+# Bottom column labels (generic, repeated for both species)
+bottom_column_labels <- c("CapTrap\nPacBio", "cDNA\nPacBio", "cDNA\nONT", "CapTrap\nONT",
+                          "CapTrap\nPacBio", "cDNA\nPacBio", "cDNA\nONT", "CapTrap\nONT")
+bottom_label_grobs <- lapply(bottom_column_labels, function(txt) {
+  ggdraw() + draw_label(txt, fontface = "plain", size = 7, fontfamily = "sans")
 })
 
-# Build rows with row labels
-row_labels <- c("Bambu", "Stringtie", "Flair", "All-ref", "IsoSeq")
+# Build rows with row labels (wider left label and larger text)
+row_labels <- vapply(pipeline_row_specs, function(x) x$row_label, character(1))
+# Wrap long row label to three lines: "Isoseq", "+", "SQ3 ML"
+row_labels[row_labels == "Isoseq + SQ3 ML"] <- "Isoseq\n+\nSQ3 ML"
 row_panels <- list()
 for (i in seq_along(row_labels)) {
-  row_label_grob <- ggdraw() + draw_label(row_labels[i], fontfamily = "sans", fontface = "bold", size = 7, angle = 0, hjust = 1)
+  row_label_grob <- ggdraw() +
+    draw_label(row_labels[i], fontfamily = "sans", fontface = "bold", size = 7, angle = 0, hjust = 1) +
+    theme(plot.margin = unit(c(0, 1, 0, 2), "mm"))
   row_grobs <- overall_radar_grobs[((i-1)*8 + 1):(i*8)]
-  row_panel <- plot_grid(plotlist = c(list(row_label_grob), row_grobs), ncol = 9, rel_widths = c(0.5, rep(1,8)))
+  row_panel <- plot_grid(plotlist = c(list(row_label_grob), row_grobs), ncol = 9, rel_widths = c(0.9, rep(1,8)))
   row_panels[[i]] <- row_panel
 }
 
-# Header row
+# Group headers at top: Human (first 4 cols) and Mouse (last 4 cols)
 blank_corner <- ggdraw()
-header_row <- plot_grid(plotlist = c(list(blank_corner), column_label_grobs), ncol = 9, rel_widths = c(0.5, rep(1,8)))
+human_header <- make_group_header("Human", title_size = 9)
+mouse_header <- make_group_header("Mouse", title_size = 9)
+group_header_row <- plot_grid(blank_corner, human_header, mouse_header, ncol = 3, rel_widths = c(0.9, 4, 4))
 
-# Combine header + rows, add legend
-overall_grid <- plot_grid(plotlist = c(list(header_row), row_panels), ncol = 1, rel_heights = c(0.6, rep(1,5)))
-overall_grid_with_legend <- plot_grid(overall_grid, radar_plot_legend, ncol = 1, rel_heights = c(1, 0.05))
+# Bottom row with column labels (force center alignment under each radar cell)
+bottom_labels_row <- plot_grid(
+  plotlist = c(list(blank_corner), bottom_label_grobs),
+  ncol = 9,
+  rel_widths = c(0.9, rep(1, 8)),
+  align = "h",
+  axis = "tb"
+)
 
-# Save as fig-4b.pdf (width 180 mm; height derived from 5 rows + header + legend)
+# Combine header + rows + bottom labels, add legend
+overall_grid <- plot_grid(plotlist = c(list(group_header_row), row_panels, list(bottom_labels_row)), ncol = 1, rel_heights = c(0.15, rep(1, length(row_panels)), 0.5))
+overall_grid_padded <- overall_grid + theme(plot.margin = unit(c(10, 2, 2, 6), "mm"))
+overall_grid_with_legend <- plot_grid(overall_grid_padded, radar_plot_legend, ncol = 1, rel_heights = c(1, 0.18))
+
+# Save as fig-4b.pdf (width 180 mm; height derived from 4 rows + headers + legend)
 cell_width_mm <- 180 / 8
-overall_height_mm <- cell_width_mm * 6 + 10
+overall_height_mm <- cell_width_mm * 5.6 + 12
   figure_path <- file.path(output_dir, "fig-4b.pdf")
 message("Saving figure to ", figure_path)
 ggsave(figure_path, overall_grid_with_legend, width = 180, height = overall_height_mm, units = "mm", device = "pdf", limitsize = FALSE)
+
+# Write TSV of underlying metrics/metadata
+tsv_path <- file.path(tsv_dir, "fig-4b.tsv")
+if (length(metrics_records) > 0) {
+  metrics_df <- tryCatch({
+    bind_rows(metrics_records)
+  }, error = function(e) NULL)
+  if (!is.null(metrics_df)) {
+    # Ensure standard column order
+    std_cols <- c("figure_id", "pipeline", "sample", "species", "eval_type", "status")
+    other_cols <- setdiff(colnames(metrics_df), std_cols)
+    metrics_df <- metrics_df[, c(std_cols, other_cols)]
+    write_tsv(metrics_df, tsv_path)
+    message("Wrote TSV to ", tsv_path)
+  } else {
+    # Fallback minimal TSV when no records (shouldn't happen)
+    write_tsv(tibble(figure_id = "fig-4b", note = "no_metrics_records"), tsv_path)
+    message("Wrote minimal TSV to ", tsv_path)
+  }
+} else {
+  # No cells processed or no data everywhere
+  write_tsv(tibble(figure_id = "fig-4b", status = "no_data"), tsv_path)
+  message("Wrote TSV to ", tsv_path)
+}
 
 message("Done.")

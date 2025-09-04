@@ -16,6 +16,18 @@ suppressPackageStartupMessages({
   library(cowplot)  # for get_legend()
 })
 
+# Mitigate OpenMP SHM issues in restricted environments
+Sys.setenv(OMP_NUM_THREADS = "1", OMP_PROC_BIND = "FALSE", OMP_WAIT_POLICY = "PASSIVE", KMP_INIT_AT_FORK = "0")
+
+# Helper to resolve preferred paths: try absolute figs/data, then repo-relative figs/data
+resolve_path <- function(candidates, is_dir = FALSE) {
+  for (p in candidates) {
+    if (!is_dir && file.exists(p)) return(p)
+    if (is_dir && dir.exists(p)) return(p)
+  }
+  return(candidates[[1]])
+}
+
 # (Optional) Debugging options
 # options(error = recover)
 # traceback()
@@ -141,12 +153,13 @@ calculate_tusco_metrics <- function(classification_data,
   # 3) Define True Positives (TP), Partially True Positives (PTP),
   # False Negatives (FN), and False Positives (FP)
   TUSCO_RM <- TUSCO_transcripts %>%
+    dplyr::mutate(mono_thresh = ifelse(!is.na(ref_length) & ref_length > 3000, 100, 50)) %>%
     dplyr::filter(
       subcategory == "reference_match" |
-        (subcategory == "mono-exon" &
-           ref_exons == 1 &
-           abs(diff_to_TSS) < 50 &
-           abs(diff_to_TTS) < 50)
+      (!is.na(ref_length) & ref_length > 3000 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= 100 & abs(diff_to_TTS) <= 100) |
+      (subcategory == "mono-exon" & ref_exons == 1 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= mono_thresh & abs(diff_to_TTS) <= mono_thresh)
     )
   TP_tusco <- TUSCO_RM
   TP_TUSCO <- unique(TP_tusco$associated_gene)
@@ -248,12 +261,13 @@ calculate_mane_metrics <- function(classification_data, mane_gtf_file) {
 
   # 3) Define TP, PTP, FN, FP (isoform-based counts for TP, PTP, FP; reference-based for FN)
   TP_isoforms_df <- MANE_transcripts_matched %>%
+    dplyr::mutate(mono_thresh = ifelse(!is.na(ref_length) & ref_length > 3000, 100, 50)) %>%
     dplyr::filter(
       subcategory == "reference_match" |
-        (subcategory == "mono-exon" &
-           ref_exons == 1 &
-           abs(diff_to_TSS) < 50 &
-           abs(diff_to_TTS) < 50)
+      (!is.na(ref_length) & ref_length > 3000 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= 100 & abs(diff_to_TTS) <= 100) |
+      (subcategory == "mono-exon" & ref_exons == 1 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= mono_thresh & abs(diff_to_TTS) <= mono_thresh)
     )
   TP_count_isoform_based <- nrow(TP_isoforms_df)
 
@@ -350,9 +364,10 @@ process_all_classifications_tusco <- function(main_data_dir, tusco_annot_file, o
       )
   }
 
-  write_csv(all_metrics, output_file)
-  message("\nAll TUSCO metrics have been saved to: ", output_file)
-
+  # Suppress per-metric file writes to avoid extra outputs under ./plots
+  # write_csv(all_metrics, output_file)
+  message("\nTUSCO metrics computed for in-memory use.")
+  
   return(all_metrics)
 }
 
@@ -403,8 +418,9 @@ process_all_classifications_mane <- function(main_data_dir, mane_gtf_file, outpu
       )
   }
 
-  write_csv(all_metrics_mane, output_file_mane)
-  message("\\nAll MANE metrics have been saved to: ", output_file_mane)
+  # Suppress per-metric file writes to avoid extra outputs under ./plots
+  # write_csv(all_metrics_mane, output_file_mane)
+  message("\\nMANE metrics computed for in-memory use.")
 
   return(all_metrics_mane)
 }
@@ -417,11 +433,11 @@ process_all_classifications_mane <- function(main_data_dir, mane_gtf_file, outpu
 # !!! ADJUST main_data_dir TO YOUR TUSCO RIN DATA LOCATION !!!
 # This directory should contain subdirectories for each sample,
 # and each sample subdir should have a '[sample_name]_classification.txt' file.
-main_data_dir  <- '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/RIN'
-tusco_annot_file <- '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/tusco/tusco_human.tsv'
-output_file    <- '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-3/plots/tusco_metrics_summary.csv' # Save in plots
-mane_gtf_file <- '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/reference/mane.v1.4.ensembl_genomic.gtf'
-output_file_mane <- '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-3/plots/mane_metrics_summary.csv'
+main_data_dir  <- resolve_path(c('/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/RIN', file.path('..','data','RIN')), is_dir = TRUE)
+tusco_annot_file <- resolve_path(c('/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/tusco/tusco_human.tsv', file.path('..','data','tusco','tusco_human.tsv')))
+output_file    <- NULL
+mane_gtf_file <- resolve_path(c('/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/reference/mane.v1.4.ensembl_genomic.gtf', file.path('..','data','reference','mane.v1.4.ensembl_genomic.gtf')))
+output_file_mane <- NULL
 
 # Create the main_data_dir if it doesn't exist, with a note to the user
 if (!dir.exists(main_data_dir)) {
@@ -659,16 +675,28 @@ final_plot <- ggarrange(
 # Do not display the plot; rely on ggsave to write the file
 # print(final_plot)
 
-# Save the final figure to a PDF file
+# Save the final figure to a PDF file and a single TSV with underlying data
+plot_dir <- file.path(".", "plot")
+tsv_dir  <- file.path(".", "tsv")
+if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
+if (!dir.exists(tsv_dir))  dir.create(tsv_dir,  recursive = TRUE)
+
+pdf_path <- file.path(plot_dir, "figure3c.pdf")
+tsv_path <- file.path(tsv_dir,  "figure3c.tsv")
+
 ggsave(
-  "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-3/plots/figure3c.pdf",
-  final_plot,
+  filename = pdf_path,
+  plot = final_plot,
   width = 1.5,
   height = 5,
   dpi = 600
 )
 
- message("Script completed. Output PDF: ./RIN_correlation_combined_tusco_sequin_mane.pdf")
-message("Output CSV (TUSCO): ./tusco_metrics_summary.csv")
-message("Output CSV (MANE): ./mane_metrics_summary.csv")
+if (exists("all_data") && is.data.frame(all_data)) {
+  all_out <- all_data %>% mutate(figure_id = "fig-3", panel_id = "3c")
+  readr::write_tsv(all_out, tsv_path)
+}
+
+message("Script completed. Output PDF: ./plot/figure3c.pdf")
+message("Output TSV: ./tsv/figure3c.tsv (if data available)")
 message(paste0("IMPORTANT: Ensure 'main_data_dir' (currently ", shQuote(main_data_dir) ,") points to your TUSCO classification files for RIN analysis."))

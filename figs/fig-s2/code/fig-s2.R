@@ -2,17 +2,45 @@
 ### 0. Define Variables ###
 ###########################
 
-# Input data
-alphagenome_human_json <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/alphagenome/human_scores.json"
-alphagenome_mouse_json <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/alphagenome/mouse_scores.json"
+# All paths must be confined to the fig-s2 folder.
+# Derive base_dir as the parent of this script (fig-s2),
+# falling back to getwd() when not available.
+.script_args <- commandArgs(trailingOnly = FALSE)
+.script_file <- sub('^--file=', '', .script_args[grep('^--file=', .script_args)])
+base_dir <- if (length(.script_file) == 1 && nzchar(.script_file)) {
+  normalizePath(file.path(dirname(.script_file), ".."), mustWork = FALSE)
+} else {
+  getwd()
+}
+plot_dir <- file.path(base_dir, "plot")
+tsv_dir  <- file.path(base_dir, "tsv")
+log_path <- file.path(base_dir, "run.log")
 
-tusco_human_tsv <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/tusco/tusco_human.tsv"
-tusco_mouse_tsv <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/tusco/tusco_mouse.tsv"
+# Input data: prefer local ./data/, then shared ../data/ (figs/data).
+local_data_root  <- file.path(base_dir, "data")
+shared_data_root <- normalizePath(file.path(base_dir, "..", "data"), mustWork = FALSE)
 
-# Output
-output_dir        <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-s2/plots"
-output_file_log   <- file.path(output_dir, "fig_s2_log.pdf")
-output_file_linear<- file.path(output_dir, "fig_s2_linear.pdf")
+resolve_data_path <- function(...) {
+  sub <- file.path(...)
+  candidates <- c(
+    file.path(local_data_root, sub),
+    file.path(shared_data_root, sub)
+  )
+  for (p in candidates) {
+    if (!is.na(p) && file.exists(p)) return(p)
+  }
+  return(NA_character_)
+}
+
+exists_path <- function(p) is.character(p) && length(p) == 1 && !is.na(p) && file.exists(p)
+
+alphagenome_human_json <- resolve_data_path("alphagenome", "human_scores.json")
+alphagenome_mouse_json <- resolve_data_path("alphagenome", "mouse_scores.json")
+tusco_human_tsv        <- resolve_data_path("tusco", "tusco_human.tsv")
+tusco_mouse_tsv        <- resolve_data_path("tusco", "tusco_mouse.tsv")
+
+# Output (only log-scale figure requested)
+output_file_log    <- file.path(plot_dir, "fig-s2-log.pdf")
 
 # Visual style constants (match Fig. 1d)
 LOG_OFFSET <- 1e-4
@@ -20,6 +48,13 @@ LOG_OFFSET <- 1e-4
 ##################
 ### 1. Libraries ###
 ##################
+
+# Open execution log
+log_con <- file(log_path, open = "wt")
+sink(log_con, type = "output")
+sink(log_con, type = "message")
+cat(sprintf("[INFO] fig-s2 run started at %s\n", format(Sys.time(), tz = "UTC")))
+cat(sprintf("[INFO] Working directory: %s\n", base_dir))
 
 suppressPackageStartupMessages({
   library(jsonlite)
@@ -83,20 +118,47 @@ compute_scores_from_json <- function(json_path) {
 ### 3. Load and Prepare Data ###
 #############################
 
-cat("Reading TUSCO gene lists...\n")
-tusco_human <- read_tusco_gene_ids(tusco_human_tsv)
-tusco_mouse <- read_tusco_gene_ids(tusco_mouse_tsv)
+dir.create(plot_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(tsv_dir,  showWarnings = FALSE, recursive = TRUE)
+cat(sprintf("[INFO] Ensured output dirs: %s, %s\n", plot_dir, tsv_dir))
+
+missing_inputs <- character(0)
+
+cat("[INFO] Reading TUSCO gene lists...\n")
+if (!exists_path(tusco_human_tsv)) missing_inputs <- c(missing_inputs, "tusco_human.tsv (local or shared)")
+if (!exists_path(tusco_mouse_tsv)) missing_inputs <- c(missing_inputs, "tusco_mouse.tsv (local or shared)")
+
+if (exists_path(tusco_human_tsv)) cat("[INFO] Using tusco_human.tsv at ", tusco_human_tsv, "\n", sep = "")
+if (exists_path(tusco_mouse_tsv)) cat("[INFO] Using tusco_mouse.tsv at ", tusco_mouse_tsv, "\n", sep = "")
+
+tusco_human <- if (exists_path(tusco_human_tsv)) read_tusco_gene_ids(tusco_human_tsv) else character(0)
+tusco_mouse <- if (exists_path(tusco_mouse_tsv)) read_tusco_gene_ids(tusco_mouse_tsv) else character(0)
 cat("  Human TUSCO genes:", length(tusco_human), "\n")
 cat("  Mouse TUSCO genes:", length(tusco_mouse), "\n\n")
 
-cat("Reading AlphaGenome JSONs...\n")
-human_scores <- compute_scores_from_json(alphagenome_human_json)
-human_scores[, Species := "Human"]
-mouse_scores <- compute_scores_from_json(alphagenome_mouse_json)
-mouse_scores[, Species := "Mouse"]
+cat("[INFO] Reading AlphaGenome JSONs...\n")
+if (!exists_path(alphagenome_human_json)) missing_inputs <- c(missing_inputs, "alphagenome human_scores.json (local or shared)")
+if (!exists_path(alphagenome_mouse_json)) missing_inputs <- c(missing_inputs, "alphagenome mouse_scores.json (local or shared)")
+
+if (exists_path(alphagenome_human_json)) cat("[INFO] Using human_scores.json at ", alphagenome_human_json, "\n", sep = "")
+if (exists_path(alphagenome_mouse_json)) cat("[INFO] Using mouse_scores.json at ", alphagenome_mouse_json, "\n", sep = "")
+
+human_scores <- if (exists_path(alphagenome_human_json)) compute_scores_from_json(alphagenome_human_json) else data.table()
+if (nrow(human_scores) > 0) human_scores[, Species := "Human"]
+mouse_scores <- if (exists_path(alphagenome_mouse_json)) compute_scores_from_json(alphagenome_mouse_json) else data.table()
+if (nrow(mouse_scores) > 0) mouse_scores[, Species := "Mouse"]
 
 cat("  Human genes in JSON:", nrow(human_scores), "\n")
 cat("  Mouse genes in JSON:", nrow(mouse_scores), "\n\n")
+
+if (length(missing_inputs) > 0) {
+  cat("[WARN] Missing input files detected (remaining work will be skipped):\n")
+  for (p in missing_inputs) cat("  - ", p, "\n", sep = "")
+  cat("[INFO] Exiting without generating PDFs/TSVs due to missing inputs.\n")
+  cat(sprintf("[INFO] fig-s2 run finished at %s\n", format(Sys.time(), tz = "UTC")))
+  sink(type = "message"); sink(type = "output"); close(log_con)
+  quit(save = "no", status = 0)
+}
 
 # Mark groups: TUSCO vs Other (treat JSON set as single-isoform cohort)
 human_scores[, Group := ifelse(gene_id %in% tusco_human, "TUSCO", "Other")]
@@ -126,7 +188,7 @@ if (!"Score" %in% names(long_dt)) {
 }
 
 # Remove NA scores for plotting, but keep track of counts
-cat("Non-NA counts by type:\n")
+cat("[INFO] Non-NA counts by type:\n")
 print(na.omit(long_dt)[, .N, by = .(Species, Group, ScoreType)])
 long_dt <- long_dt[!is.na(Score)]
 
@@ -168,66 +230,54 @@ p_log <- ggplot(plot_dt_log, aes(x = Group, y = log_score, fill = PlotGroup)) +
   scale_fill_manual(values = custom_colors, name = "Group",
                     labels = c("Human TUSCO", "Mouse TUSCO", "Human Other", "Mouse Other")) +
   scale_x_discrete(labels = c("TUSCO" = "TUSCO", "Other" = "Other")) +
-  labs(x = "", y = bquote(log[10]~"(Score +"~.(LOG_OFFSET)~")"), title = "AlphaGenome Scores: TUSCO vs. Other Single-Isoform Genes") +
-  theme_classic(base_size = 7) +
+  labs(x = "", y = "log10 [Score + 1e-04]") +
+  theme_bw(base_size = 7) +
   theme(
-    axis.line = element_line(color = "black", linewidth = 0.35),
+    # Remove panel/plot backgrounds while keeping a boxed border
+    panel.background = element_blank(),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.35),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_rect(fill = NA, colour = "black"),
+    axis.line = element_blank(),
     axis.ticks = element_line(color = "black", linewidth = 0.35),
     axis.text.x = element_text(color = "black", angle = 0, hjust = 0.5),
     axis.text.y = element_text(color = "black"),
     axis.title.y = element_text(color = "black"),
-    plot.title = element_text(hjust = 0.5),
-    legend.position = "right",
-    strip.background = element_blank(),
-    strip.text = element_text(face = "bold")
+    legend.position = "right"
   )
 
-# Linear-scale version (force Splicing y-scale to 0–5)
-plot_dt_linear <- copy(filtered_dt)
-plot_dt_linear[ScoreType == "Splicing", Score := pmin(pmax(Score, 0), 5)]
-
-# Helper blank data to clamp Splicing facets exactly to [0, 5]
-splicing_bounds <- unique(plot_dt_linear[ScoreType == "Splicing", .(Species, ScoreType)])
-splicing_bounds <- splicing_bounds[, .(bound = c(0, 5)), by = .(Species, ScoreType)]
-
-p_linear <- ggplot(plot_dt_linear, aes(x = Group, y = Score, fill = PlotGroup)) +
-  geom_violin(trim = TRUE, position = position_dodge(width = 0.9), alpha = 0.7, linewidth = 0.3) +
-  geom_boxplot(width = 0.15, outlier.shape = NA, position = position_dodge(width = 0.9), fill = "white", alpha = 0.5, linewidth = 0.3,
-               aes(group = interaction(Species, Group))) +
-  # Ensure Splicing facets use 0–5 exactly
-  geom_blank(data = splicing_bounds, inherit.aes = FALSE, aes(y = bound)) +
-  facet_grid(ScoreType ~ Species, scales = "free_y") +
-  scale_fill_manual(values = custom_colors, name = "Group",
-                    labels = c("Human TUSCO", "Mouse TUSCO", "Human Other", "Mouse Other")) +
-  scale_x_discrete(labels = c("TUSCO" = "TUSCO", "Other" = "Other")) +
-  labs(x = "", y = "Score", title = "AlphaGenome Scores: TUSCO vs. Other Single-Isoform Genes") +
-  theme_classic(base_size = 7) +
-  theme(
-    axis.line = element_line(color = "black", linewidth = 0.35),
-    axis.ticks = element_line(color = "black", linewidth = 0.35),
-    axis.text.x = element_text(color = "black", angle = 0, hjust = 0.5),
-    axis.text.y = element_text(color = "black"),
-    axis.title.y = element_text(color = "black"),
-    plot.title = element_text(hjust = 0.5),
-    legend.position = "right",
-    strip.background = element_blank(),
-    strip.text = element_text(face = "bold")
-  )
+## Linear-scale version omitted per request. Only log-scale figure is generated.
 
 ############################
-### 5. Save figure to PDF ###
+### 5. Save log figure + TSV ###
 ############################
 
-if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+# Save PDF only under ./plot
+ggsave(filename = output_file_log, plot = p_log, device = "pdf", width = 4.0, height = 2.6, units = "in", dpi = 300, bg = "transparent")
+cat("[INFO] Saved log-scale figure: ", output_file_log, "\n", sep = "")
 
-# Write per-TUSCO gene scores to a log TSV (median expression, median splicing)
-tusco_scores_log <- combined[Group == "TUSCO", .(gene_id, Species, expression_score, splicing_score)]
-setcolorder(tusco_scores_log, c("gene_id", "Species", "expression_score", "splicing_score"))
-fwrite(tusco_scores_log, file = file.path(output_dir, "fig_s2_TUSCO_scores.tsv"), sep = "\t")
+# Matching TSV with underlying data and minimal metadata.
+# fig-s2-log.tsv: per-gene log-scale values + summaries
+fig_log_id <- "fig-s2-log"
+raw_log <- plot_dt_log[, .(figure_id = fig_log_id, panel_id = ScoreType, gene_id, Species, Group, variable = "log10_score_plus_offset", value = log_score)]
+summary_log <- raw_log[, .(
+  record_type = "summary",
+  n = .N,
+  median = median(value, na.rm = TRUE),
+  mean = mean(value, na.rm = TRUE),
+  sd = sd(value, na.rm = TRUE)
+), by = .(figure_id, panel_id, Species, Group)]
+summary_log$variable <- "log10_score_plus_offset"; summary_log$value <- NA_real_
+summary_log$gene_id <- NA_character_
 
-ggsave(filename = output_file_log,    plot = p_log,    device = "pdf", width = 4.0, height = 2.6, units = "in", dpi = 300)
-ggsave(filename = output_file_linear, plot = p_linear, device = "pdf", width = 4.0, height = 2.6, units = "in", dpi = 300)
+raw_log[, record_type := "raw"]
+setcolorder(raw_log, c("record_type", "figure_id", "panel_id", "Species", "Group", "gene_id", "variable", "value"))
+setcolorder(summary_log, names(raw_log))
+out_tsv_log <- file.path(tsv_dir, "fig-s2-log.tsv")
+fwrite(rbindlist(list(raw_log, summary_log), use.names = TRUE, fill = TRUE), file = out_tsv_log, sep = "\t")
+cat("[INFO] Wrote TSV for log figure: ", out_tsv_log, "\n", sep = "")
 
-cat("Saved log-scale figure:", output_file_log, "\n")
-cat("Saved linear-scale figure:", output_file_linear, "\n")
-cat("Saved TUSCO scores log:", file.path(output_dir, "fig_s2_TUSCO_scores.tsv"), "\n")
+cat(sprintf("[INFO] fig-s2 run finished at %s\n", format(Sys.time(), tz = "UTC")))
+sink(type = "message"); sink(type = "output"); close(log_con)

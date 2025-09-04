@@ -11,7 +11,18 @@
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # 1) Load libraries
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-setwd("/Users/tianyuan/Desktop/github_dev/tusco-paper")
+# Do not change working directory; restrict outputs to local ./plot and ./tsv
+# Mitigate OpenMP SHM issues in restricted environments
+Sys.setenv(OMP_NUM_THREADS = "1", OMP_PROC_BIND = "FALSE", OMP_WAIT_POLICY = "PASSIVE", KMP_INIT_AT_FORK = "0")
+
+# Helper to resolve preferred paths: try absolute figs/data, then repo-relative figs/data
+resolve_path <- function(candidates, is_dir = FALSE) {
+  for (p in candidates) {
+    if (!is_dir && base::file.exists(p)) return(p)
+    if (is_dir && base::dir.exists(p)) return(p)
+  }
+  return(candidates[[1]])
+}
 
 suppressPackageStartupMessages({
   library(tidyr)
@@ -35,7 +46,7 @@ suppressPackageStartupMessages({
 # utilities_path <- args[4]
 
 # Hard-code for illustration or adapt:
-parent_dir <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/lrgasp/mouse" # Use local repo data
+parent_dir <- resolve_path(c("/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/lrgasp/mouse", base::file.path("..","data","lrgasp","mouse")), is_dir = TRUE) # Use local repo data
 
 classification_folders <- c(
   "ES_cdna_ont",
@@ -49,18 +60,16 @@ classification_folders <- c(
 classification_filename <- "_classification.txt"
 
 # TUSCO TSV file for mouse
-tusco_file <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/tusco/tusco_mouse.tsv" # Changed from bugsi_file
+tusco_file <- resolve_path(c("/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/tusco/tusco_mouse.tsv", base::file.path("..","data","tusco","tusco_mouse.tsv"))) # Changed from bugsi_file
 
 # Short-read quant
-short_read_quant <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/lrgasp/short_read_quant/mouse_quant.genes.sf"
+short_read_quant <- resolve_path(c("/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/lrgasp/short_read_quant/mouse_quant.genes.sf", base::file.path("..","data","lrgasp","short_read_quant","mouse_quant.genes.sf")))
 
 # Output folder (same as script's directory)
-output_dir <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-3/plots" # Output files to plots dir
-
-# Create the directory if it doesn't exist
-if (!base::dir.exists(output_dir)) {
-  base::dir.create(output_dir, recursive = TRUE)
-}
+plot_dir <- base::file.path(".", "plot")
+tsv_dir  <- base::file.path(".", "tsv")
+if (!base::dir.exists(plot_dir)) base::dir.create(plot_dir, recursive = TRUE)
+if (!base::dir.exists(tsv_dir))  base::dir.create(tsv_dir,  recursive = TRUE)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # 3) Helper: read TUSCO TSV, get TUSCO gene set (no version)
@@ -271,12 +280,10 @@ p <- ComplexUpset::upset(
     legend.position = "none"
   )
 
-if (!base::dir.exists(output_dir)) {
-  base::dir.create(output_dir, recursive = TRUE)
-}
+## No separate output_dir; use plot_dir/tsv_dir defined above
 
 if (FALSE) ggplot2::ggsave(
-  filename = base::file.path(output_dir, "figure3d-mouse.pdf"), # Disabled per request
+  filename = base::file.path(plot_dir, "figure3d-mouse.pdf"), # Disabled per request
   plot = p,
   width = 4.5,  # Matched human script
   height = 3.5, # Matched human script
@@ -293,9 +300,7 @@ base::message("UpSet plot not generated per request.")
 common_fn <- base::Reduce(base::intersect, fn_list)
 base::message("Number of common FN TUSCO genes across all sets: ", base::length(common_fn)) # Changed from BUGSI
 
-common_fn_file <- base::file.path(output_dir, "common_tusco_fn_genes.txt") # Changed filename
-base::writeLines(common_fn, con = common_fn_file)
-base::message("Common FN TUSCO genes saved to: ", common_fn_file) # Changed from BUGSI
+# Do not write extra files outside the consolidated TSV export
 
 base::message("Done.")
 
@@ -352,7 +357,7 @@ p_dist <- ggplot2::ggplot(plot_df, ggplot2::aes(x = base::factor(num_samples_sha
   ggplot2::geom_text(ggplot2::aes(label = num_genes), vjust = -0.5, size = 2)
 
 # Save the plot
-dist_plot_file <- base::file.path(output_dir, "figure3d-mouse.pdf") # Secondary output
+dist_plot_file <- base::file.path(plot_dir, "figure3d-mouse.pdf") # Output only under ./plot
 ggplot2::ggsave(
   filename = dist_plot_file,
   plot = p_dist,
@@ -363,4 +368,9 @@ ggplot2::ggsave(
   dpi = 300
 )
 
-base::message("FN TUSCO distribution bar plot saved to: ", dist_plot_file) # Changed from BUGSI
+base::message("FN TUSCO distribution bar plot saved to: ", dist_plot_file)
+
+# Export TSV with underlying data and minimal metadata
+tsv_path <- base::file.path(tsv_dir, "figure3d-mouse.tsv")
+plot_df_out <- plot_df %>% dplyr::mutate(figure_id = "fig-3", panel_id = "3d-mouse", record_type = "distribution_counts")
+readr::write_tsv(plot_df_out, tsv_path)

@@ -5,20 +5,49 @@
 suppressPackageStartupMessages({
   library(data.table)
   library(ggplot2)
-  library(rtracklayer)
+  # rtracklayer is used via rtracklayer::import only if GTFs exist
 })
 
 # Suppress data.table NSE notes for R CMD check/lint
 utils::globalVariables(c(
   "exon_len", ".", "transcript_id", "associated_transcript_nov", "associated_transcript",
   "structural_category", "label", "subcategory", "pbid", "read_length",
-  "exonic_length", "id", "species", "Species", "Group", "PlotGroup"
+  "exonic_length", "id", "species", "Species", "Group", "PlotGroup",
+  "ref_length", "diff_to_TSS", "diff_to_TTS"
 ))
 
-# ---- 0. Paths ----
-BASE_DIR <- "/Users/tianyuan/Desktop/github_dev/tusco-paper"
-DATA_BASE <- file.path(BASE_DIR, "figs", "data", "lrgasp", "tusco_novel_evl")
-OUT_DIR_PLOTS <- file.path(BASE_DIR, "figs", "fig-4", "plots")
+# ---- 0. Paths (restricted to this fig-4 folder) ----
+argv <- commandArgs(trailingOnly = FALSE)
+script_path <- tryCatch({
+  sub("^--file=", "", argv[grep("^--file=", argv)][1])
+}, error = function(e) NA_character_)
+if (is.na(script_path) || script_path == "") {
+  script_path <- file.path(getwd(), "figs", "fig-4", "code", "fig-4c.R")
+}
+FIG_DIR <- normalizePath(file.path(dirname(script_path), ".."), winslash = "/", mustWork = FALSE)
+FIGS_DIR <- normalizePath(file.path(FIG_DIR, ".."), winslash = "/", mustWork = FALSE)
+
+first_existing <- function(paths) {
+  for (p in paths) {
+    if (!is.na(p) && !is.null(p) && file.exists(p)) return(p)
+  }
+  if (length(paths) > 0) return(paths[[1]]) else return(NA_character_)
+}
+first_existing_dir <- function(paths) {
+  for (p in paths) {
+    if (!is.na(p) && !is.null(p) && dir.exists(p)) return(p)
+  }
+  if (length(paths) > 0) return(paths[[1]]) else return(NA_character_)
+}
+
+DATA_BASE <- first_existing_dir(list(
+  file.path(FIG_DIR,  "data", "lrgasp", "tusco_novel_evl"),
+  file.path(FIGS_DIR, "data", "lrgasp", "tusco_novel_evl")
+))
+PLOT_DIR <- file.path(FIG_DIR, "plot")
+TSV_DIR  <- file.path(FIG_DIR, "tsv")
+if (!dir.exists(PLOT_DIR)) dir.create(PLOT_DIR, recursive = TRUE)
+if (!dir.exists(TSV_DIR)) dir.create(TSV_DIR, recursive = TRUE)
 
 READ_STATS_FILES <- list(
   wtc11_cdna_pacbio = file.path(DATA_BASE, "wtc11_cdna_pacbio.transcriptome.read_stat.with_len.txt"),
@@ -37,17 +66,21 @@ CLASS_FILES_NOVEL <- list(
 )
 
 TUSCO_TSV <- list(
-  human = file.path(BASE_DIR, "figs", "data", "tusco", "tusco_human.tsv"),
-  mouse = file.path(BASE_DIR, "figs", "data", "tusco", "tusco_mouse.tsv")
+  human = first_existing(list(file.path(FIG_DIR,  "data", "tusco", "tusco_human.tsv"),
+                              file.path(FIGS_DIR, "data", "tusco", "tusco_human.tsv"))),
+  mouse = first_existing(list(file.path(FIG_DIR,  "data", "tusco", "tusco_mouse.tsv"),
+                              file.path(FIGS_DIR, "data", "tusco", "tusco_mouse.tsv")))
 )
 
 TUSCO_GTF <- list(
-  human = file.path(BASE_DIR, "figs", "data", "tusco", "tusco_human.gtf"),
-  mouse = file.path(BASE_DIR, "figs", "data", "tusco", "tusco_mouse.gtf")
+  human = first_existing(list(file.path(FIG_DIR,  "data", "tusco", "tusco_human.gtf"),
+                              file.path(FIGS_DIR, "data", "tusco", "tusco_human.gtf"))),
+  mouse = first_existing(list(file.path(FIG_DIR,  "data", "tusco", "tusco_mouse.gtf"),
+                              file.path(FIGS_DIR, "data", "tusco", "tusco_mouse.gtf")))
 )
 
-OUTPUT_PDF_COMBINED <- file.path(OUT_DIR_PLOTS, "fig-4c.pdf")
-if (!dir.exists(OUT_DIR_PLOTS)) dir.create(OUT_DIR_PLOTS, recursive = TRUE)
+OUTPUT_PDF_COMBINED <- file.path(PLOT_DIR, "fig-4c.pdf")
+OUTPUT_TSV_COMBINED <- file.path(TSV_DIR,  "fig-4c.tsv")
 
 # This script now only generates the combined fig-4c.pdf
 
@@ -57,6 +90,7 @@ strip_version <- function(x) {
 
 # ---- 1. Load TUSCO transcript sets ----
 load_tusco_transcripts <- function(tsv_path) {
+  if (!file.exists(tsv_path)) return(character(0))
   dt <- fread(tsv_path, sep = "\t", header = FALSE,
               col.names = c("ensembl","transcript","gene_name","gene_id_num","refseq","prot_refseq"),
               colClasses = "character", data.table = TRUE, showProgress = FALSE)
@@ -72,7 +106,7 @@ tusco_tx <- list(
 
 # ---- 2. Parse GTF to compute exonic lengths per transcript ----
 compute_exonic_lengths <- function(gtf_path, transcripts_of_interest) {
-  if (!file.exists(gtf_path)) stop("GTF not found: ", gtf_path)
+  if (!file.exists(gtf_path)) return(integer(0))
   gr <- rtracklayer::import(gtf_path)
   df <- as.data.frame(gr)
   if (!"type" %in% names(df)) {
@@ -137,12 +171,55 @@ multi_exon_tx <- list(
   mouse = unique(exon_counts$mouse[exon_count >= 2, transcript_id])
 )
 
+# ---- 2c. Map transcript_id -> gene_id (version-stripped) ----
+compute_tx_gene_map <- function(gtf_path) {
+  if (!file.exists(gtf_path)) return(data.table(transcript_id = character(), gene_id = character()))
+  gr <- rtracklayer::import(gtf_path)
+  df <- as.data.frame(gr)
+  if (!"type" %in% names(df)) {
+    if (!"type" %in% names(mcols(gr))) stop("Cannot find feature type column in GTF: ", gtf_path)
+    df$type <- mcols(gr)$type
+  }
+  if (!"transcript_id" %in% colnames(df)) {
+    if ("transcript_id" %in% colnames(mcols(gr))) {
+      df$transcript_id <- as.character(mcols(gr)$transcript_id)
+    } else {
+      stop("transcript_id not found in GTF attributes: ", gtf_path)
+    }
+  }
+  if (!"gene_id" %in% colnames(df)) {
+    if ("gene_id" %in% colnames(mcols(gr))) {
+      df$gene_id <- as.character(mcols(gr)$gene_id)
+    } else {
+      stop("gene_id not found in GTF attributes: ", gtf_path)
+    }
+  }
+  exon_df <- df[df$type == "exon", c("transcript_id", "gene_id"), drop = FALSE]
+  if (nrow(exon_df) == 0) return(data.table(transcript_id = character(), gene_id = character()))
+  exon_df$transcript_id <- strip_version(exon_df$transcript_id)
+  exon_df$gene_id <- strip_version(exon_df$gene_id)
+  unique(as.data.table(exon_df))
+}
+
+gene_map <- list(
+  human = compute_tx_gene_map(TUSCO_GTF$human),
+  mouse = compute_tx_gene_map(TUSCO_GTF$mouse)
+)
+gene_map_dt <- rbindlist(lapply(names(gene_map), function(sp) {
+  dt <- gene_map[[sp]]
+  if (nrow(dt) == 0) return(data.table(species = character(), transcript_id = character(), gene_id = character()))
+  dt[, species := sp]
+  dt[, .(species, transcript_id, gene_id)]
+}), use.names = TRUE, fill = TRUE)
+
 # ---- 3. Load SQANTI classification, label TP/PTP for TUSCO transcripts ----
 load_sqanti_classification <- function(paths, tusco_tx_set) {
   paths <- paths[file.exists(paths)]
   if (length(paths) == 0) return(data.table(pbid = character(), associated_transcript_nov = character(), label = character()))
 
-  usecols <- c("isoform","structural_category","associated_transcript","subcategory")
+  # Pull additional columns needed for extended TP rule
+  usecols <- c("isoform","structural_category","associated_transcript","subcategory",
+               "ref_length","diff_to_TSS","diff_to_TTS")
   lst <- lapply(paths, function(p) fread(p, sep = "\t", select = usecols, header = TRUE, data.table = TRUE, showProgress = FALSE))
   df <- rbindlist(lst, use.names = TRUE, fill = TRUE)
   setnames(df, "isoform", "pbid")
@@ -152,12 +229,26 @@ load_sqanti_classification <- function(paths, tusco_tx_set) {
   df <- df[associated_transcript_nov %in% tusco_tx_set]
   if (nrow(df) == 0) return(df[0])
 
-  # Keep only FSM/ISM like Python logic, then label TP/PTP (TP if reference_match)
+  # Keep only FSM/ISM like Python logic, then label TP/PTP
   df <- df[structural_category %in% c("full-splice_match", "incomplete-splice_match")]
   if (nrow(df) == 0) return(df[0])
 
+  # Ensure required columns exist and are numeric for comparisons (safely)
+  suppressWarnings({
+    if (!"ref_length" %in% names(df)) df[, ref_length := NA_real_] else df[, ref_length := as.numeric(ref_length)]
+    if (!"diff_to_TSS" %in% names(df)) df[, diff_to_TSS := NA_real_] else df[, diff_to_TSS := as.numeric(diff_to_TSS)]
+    if (!"diff_to_TTS" %in% names(df)) df[, diff_to_TTS := NA_real_] else df[, diff_to_TTS := as.numeric(diff_to_TTS)]
+  })
+
   df[, label := NA_character_]
+  # Rule 1: SQANTI reference_match is TP
   df[subcategory == "reference_match", label := "TP"]
+  # Rule 2: If not reference_match but long reference (>3000) AND both ends near annotation (<=100 bp), mark TP
+  df[is.na(label) & !is.na(ref_length) & ref_length > 3000 &
+       !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+       abs(diff_to_TSS) <= 100 & abs(diff_to_TTS) <= 100,
+     label := "TP"]
+  # Everything else is PTP
   df[is.na(label), label := "PTP"]
 
   # Collapse to transcript-level label: if any TP for a transcript, label TP else PTP
@@ -218,7 +309,7 @@ build_reads_dt <- function(class_files_map) {
     merged[, f := as.numeric(read_length) / as.numeric(exonic_length)]
     merged[, species := species]
 
-    all_reads[[length(all_reads) + 1L]] <- merged[, .(id, pbid, f, label, species)]
+    all_reads[[length(all_reads) + 1L]] <- merged[, .(id, pbid, f, label, species, associated_transcript_nov)]
   }
   if (length(all_reads) == 0) return(data.table())
   rbindlist(all_reads, use.names = TRUE, fill = TRUE)
@@ -232,7 +323,9 @@ reads_dt_novel <- build_reads_dt(CLASS_FILES_NOVEL)
 
 ## Support summary TSV generation removed
 
-if (nrow(reads_dt_ref) == 0 && nrow(reads_dt_novel) == 0) stop("No per-read records for either ref or novel; cannot plot.")
+if (nrow(reads_dt_ref) == 0 && nrow(reads_dt_novel) == 0) {
+  message("No per-read records for either ref or novel; skipping fig-4c plot.")
+}
 
 prep_plot_dt <- function(reads_dt) {
   plot_dt <- reads_dt[!is.na(f) & !is.na(label) & !is.na(species)]
@@ -247,25 +340,26 @@ prep_plot_dt <- function(reads_dt) {
 
 ## Ref/novel-specific datasets removed
 
-custom_colors <- c(
-  Human_TP  = "#6BAED6",   # TP blue
-  Mouse_TP  = "#6BAED6",   # TP blue
-  Human_PTP = "#FD8D3C",   # PTP orange
-  Mouse_PTP = "#FD8D3C"     # PTP orange
+# Use a single legend for TP/PTP across species
+group_colors <- c(
+  TP  = "#6BAED6",  # TP blue
+  PTP = "#FD8D3C"   # PTP orange
 )
 
 ## Outlier policy: keep all data points (no filtering)
 
 p_make <- function(plot_dt, title_text) {
-  ggplot(plot_dt, aes(x = Group, y = f, fill = PlotGroup)) +
+  ggplot(plot_dt, aes(x = Group, y = f, fill = Group)) +
     geom_violin(trim = TRUE, position = position_dodge(width = 0.9), alpha = 0.7, linewidth = 0.3) +
-    geom_boxplot(width = 0.15, outlier.shape = NA, position = position_dodge(width = 0.9), fill = "white", alpha = 0.5, linewidth = 0.3) +
-    facet_wrap(~Species, scales = "fixed") +
-    scale_fill_manual(values = custom_colors, name = "Group",
-                      labels = c("Human TP", "Mouse TP", "Human PTP", "Mouse PTP")) +
+    geom_boxplot(width = 0.15, outlier.shape = NA, position = position_dodge(width = 0.9), fill = "white", alpha = 0.6, linewidth = 0.3) +
+    facet_wrap(~Species, scales = "fixed", nrow = 1) +
+    scale_fill_manual(values = group_colors, name = "Group", labels = c("TP", "PTP")) +
     coord_cartesian(ylim = c(0, 2.0)) +
-    labs(x = "", y = "f (read_length / exonic_length)", title = title_text) +
+    labs(x = "", y = expression(italic(f) == L[read]/L[exonic]), title = title_text) +
     scale_x_discrete(labels = c(TP = "TP", PTP = "PTP")) +
+    guides(fill = guide_legend(title = "Group",
+                               keyheight = grid::unit(2.5, "mm"),
+                               keywidth  = grid::unit(4,   "mm"))) +
     theme_classic(base_size = 7) +
     theme(
       axis.line = element_line(color = "black", linewidth = 0.35),
@@ -273,9 +367,16 @@ p_make <- function(plot_dt, title_text) {
       axis.text.x = element_text(color = "black", angle = 0, hjust = 0.5),
       axis.text.y = element_text(color = "black"),
       axis.title.y = element_text(color = "black"),
-      plot.title = element_text(hjust = 0.5),
+      plot.title = element_blank(),
       legend.position = "right",
-      strip.background = element_blank(),
+      legend.background = element_rect(fill = "white", colour = "white"),
+      legend.box.background = element_rect(fill = "white", colour = "black", linewidth = 0.35),
+      legend.key = element_rect(fill = "white", colour = "black", linewidth = 0.25),
+      legend.key.size = grid::unit(3, "mm"),
+      legend.text = element_text(size = 6),
+      legend.title = element_text(size = 6),
+      panel.border = element_rect(color = "black", fill = NA, linewidth = 0.35),
+      strip.background = element_rect(fill = "white", color = "black", linewidth = 0.35),
       strip.text = element_text(face = "bold")
     )
 }
@@ -288,13 +389,25 @@ p_make <- function(plot_dt, title_text) {
 
 # ---- Combined Ref+Novel (no TSS filter) ----
 reads_dt_all <- rbindlist(list(reads_dt_ref, reads_dt_novel), use.names = TRUE, fill = TRUE)
+
+## Write per-transcript summary log (median/highest/lowest f and unique read count)
+## No per-transcript summary file here; we will write one TSV per produced PDF below
+if (nrow(reads_dt_all)) {
+  invisible(NULL)
+}
 plot_dt_combined <- if (nrow(reads_dt_all)) prep_plot_dt(reads_dt_all) else data.table()
 if (nrow(plot_dt_combined)) {
   p_combined <- p_make(plot_dt_combined, "Ref+Novel combined (no TSS filter): per-read f for TUSCO TP/PTP")
   message("Saving plot to ", OUTPUT_PDF_COMBINED)
-  ggsave(filename = OUTPUT_PDF_COMBINED, plot = p_combined, device = "pdf", width = 4, height = 1.8, units = "in", dpi = 300)
+  ggsave(filename = OUTPUT_PDF_COMBINED, plot = p_combined, device = "pdf", width = 3.2, height = 1.3, units = "in", dpi = 300)
   message("Wrote: ", OUTPUT_PDF_COMBINED)
-  # No TSV/stat outputs for fig-4c
+  # Write matching TSV with underlying data + minimal metadata
+  plot_dt_out <- copy(plot_dt_combined)
+  plot_dt_out[, figure_id := "fig-4c"]
+  plot_dt_out[, panel_id := "combined"]
+  setcolorder(plot_dt_out, c("figure_id", "panel_id", "Species", "Group", "f", "id", "pbid", "species", "associated_transcript_nov", "PlotGroup"))
+  fwrite(plot_dt_out, file = OUTPUT_TSV_COMBINED, sep = "\t")
+  message("Wrote TSV: ", OUTPUT_TSV_COMBINED)
 } else {
   message("No data for combined plot; skipping fig-4c.")
 }

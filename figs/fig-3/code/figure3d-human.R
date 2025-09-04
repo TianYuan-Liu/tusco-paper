@@ -9,7 +9,18 @@
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # 1) Load libraries
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-setwd("/Users/tianyuan/Desktop/github_dev/tusco-paper")
+# Do not change working directory; restrict outputs to local ./plot and ./tsv
+# Mitigate OpenMP SHM issues in restricted environments
+Sys.setenv(OMP_NUM_THREADS = "1", OMP_PROC_BIND = "FALSE", OMP_WAIT_POLICY = "PASSIVE", KMP_INIT_AT_FORK = "0")
+
+# Helper to resolve preferred paths: try absolute figs/data, then repo-relative figs/data
+resolve_path <- function(candidates, is_dir = FALSE) {
+  for (p in candidates) {
+    if (!is_dir && file.exists(p)) return(p)
+    if (is_dir && dir.exists(p)) return(p)
+  }
+  return(candidates[[1]])
+}
 suppressPackageStartupMessages({
   library(tidyr)
   library(dplyr)
@@ -32,7 +43,7 @@ suppressPackageStartupMessages({
 # utilities_path <- args[4]
 
 # Hard-code for illustration or adapt:
-parent_dir <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/lrgasp/human" # Use local repo data
+parent_dir <- resolve_path(c("/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/lrgasp/human", file.path("..","data","lrgasp","human")), is_dir = TRUE) # Use local repo data
 
 classification_folders <- c(
   "WTC11_cdna_ont",
@@ -46,18 +57,16 @@ classification_folders <- c(
 classification_filename <- "_classification.txt"
 
 # TUSCO TSV file
-tusco_file <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/tusco/tusco_human.tsv" # Changed from bugsi_file
+tusco_file <- resolve_path(c("/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/tusco/tusco_human.tsv", file.path("..","data","tusco","tusco_human.tsv"))) # Changed from bugsi_file
 
 # Short-read quant
-short_read_quant <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/lrgasp/short_read_quant/human_quant.genes.sf"
+short_read_quant <- resolve_path(c("/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/lrgasp/short_read_quant/human_quant.genes.sf", file.path("..","data","lrgasp","short_read_quant","human_quant.genes.sf")))
 
 # Output folder
-output_dir <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-3/plots" # Output files to plots dir
-
-# Create the directory if it doesn't exist
-if (!dir.exists(output_dir)) {
-  dir.create(output_dir, recursive = TRUE)
-}
+plot_dir <- file.path(".", "plot")
+tsv_dir  <- file.path(".", "tsv")
+if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
+if (!dir.exists(tsv_dir))  dir.create(tsv_dir,  recursive = TRUE)
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -284,22 +293,7 @@ message("DEBUG: Structure of common_fn below:")
 print(str(common_fn))
 # ---- END DEBUG ----
 
-# Save to file
-common_fn_file <- file.path(output_dir, "common_tusco_fn_genes.txt")
-
-# ---- Ensure a clean write by removing the file if it exists ----
-if (file.exists(common_fn_file)) {
-  removed_ok <- file.remove(common_fn_file)
-  if (removed_ok) {
-    message("DEBUG: Removed existing common_fn_file successfully.")
-  } else {
-    message("DEBUG: Failed to remove existing common_fn_file.")
-  }
-}
-# ---- End clean write ----
-
-writeLines(common_fn, con = common_fn_file)
-message("Common FN TUSCO genes saved to: ", common_fn_file)
+# Do not write extra files outside the consolidated TSV export
 
 message("Done.")
 
@@ -361,7 +355,7 @@ p_dist <- ggplot(plot_df, aes(x = factor(num_samples_shared), y = num_genes)) +
   geom_text(aes(label = num_genes), vjust = -0.5, size = 2) # Adjusted text size and position
 
 # Save the plot
-dist_plot_file <- file.path(output_dir, "figure3d-human.pdf") # Secondary output
+dist_plot_file <- file.path(plot_dir, "figure3d-human.pdf") # Output only under ./plot
 ggsave(
   filename = dist_plot_file,
   plot = p_dist,
@@ -372,4 +366,9 @@ ggsave(
   dpi = 300
 )
 
-message("FN TUSCO distribution bar plot saved to: ", dist_plot_file) # Changed from BUGSI
+message("FN TUSCO distribution bar plot saved to: ", dist_plot_file)
+
+# Export TSV with underlying data and minimal metadata
+tsv_path <- file.path(tsv_dir, "figure3d-human.tsv")
+plot_df_out <- plot_df %>% mutate(figure_id = "fig-3", panel_id = "3d-human", record_type = "distribution_counts")
+readr::write_tsv(plot_df_out, tsv_path)

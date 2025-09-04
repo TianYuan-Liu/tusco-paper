@@ -2,24 +2,38 @@
 ### 0. Define Variables ###
 ###########################
 
-# Paths to TUSCO GTF files in repo data
-tusco_dir <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/tusco"
-human_gtf_file <- file.path(tusco_dir, "tusco_human.gtf")
-# Handle possible filename variant for mouse GTF
-mouse_gtf_file <- if (file.exists(file.path(tusco_dir, "tusco_mouse.gtf"))) {
-  file.path(tusco_dir, "tusco_mouse.gtf")
-} else {
-  file.path(tusco_dir, "tussco_mouse.gtf")
+## Data path resolver: prefer repo-local figs/data, but support absolute project path
+data_base_candidates <- c(
+  "figs/data",
+  "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data"
+)
+resolve_data <- function(path_in) {
+  rel <- sub("^figs/data/", "", path_in)
+  if (file.exists(path_in) || dir.exists(path_in)) return(path_in)
+  for (base in data_base_candidates) {
+    cand <- file.path(base, rel)
+    if (file.exists(cand) || dir.exists(cand)) return(cand)
+  }
+  return(path_in)
 }
 
-# Directories containing expression data (new repo-local data)
-human_dir       <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/expression/gtex"
-mouse_dir       <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/expression/encode"
+# Paths to TUSCO GTF files (support local and absolute figs/data)
+tusco_dir <- resolve_data("figs/data/tusco")
+human_gtf_file <- resolve_data("figs/data/tusco/tusco_human.gtf")
+# Handle possible filename variant for mouse GTF
+mouse_gtf_file <- if (file.exists(resolve_data("figs/data/tusco/tusco_mouse.gtf"))) {
+  resolve_data("figs/data/tusco/tusco_mouse.gtf")
+} else {
+  resolve_data("figs/data/tusco/tussco_mouse.gtf")
+}
 
-# Where to save final plot
-output_dir      <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-1/plots"
-# Output filename as requested
-output_file     <- file.path(output_dir, "fig_1d.pdf")
+# Directories containing expression data (support both bases)
+human_dir       <- resolve_data("figs/data/expression/gtex")
+mouse_dir       <- resolve_data("figs/data/expression/encode")
+
+# Where to save final plot under this figure folder (use absolute path to ensure correct location)
+figure_base_dir <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-1_fig-s1"
+output_file     <- file.path(figure_base_dir, "plot", "fig-1d.pdf")
 
 # Libraries
 library(data.table)
@@ -32,11 +46,22 @@ library(rtracklayer)  # Needed for importing TUSCO GTFs
 # Define a small constant for log transformation to avoid log10(0)
 LOG_OFFSET <- 1e-4
 
+# Limit threads to avoid OpenMP SHM errors in restricted environments
+try({
+  data.table::setDTthreads(1)
+  Sys.setenv(
+    OMP_NUM_THREADS = "1",
+    OPENBLAS_NUM_THREADS = "1",
+    MKL_NUM_THREADS = "1",
+    VECLIB_MAXIMUM_THREADS = "1"
+  )
+}, silent = TRUE)
+
 ###########################################
-### 1. Identify BUGSI Genes from GTF   ####
+### 1. Identify TUSCO Genes from GTF   ####
 ###########################################
 
-extract_bugsi_genes <- function(gtf_file) {
+extract_tusco_genes <- function(gtf_file) {
   # NOTE: Function re-purposed for TUSCO GTFs which contain a single isoform
   # per gene. The Ensembl gene identifier is stored in the metadata column
   # "ensembl" after import with rtracklayer.
@@ -61,12 +86,12 @@ extract_bugsi_genes <- function(gtf_file) {
   return(gene_ids)
 }
 
-cat("Extracting BUGSI genes...\n")
-human_bugsi_genes <- extract_bugsi_genes(human_gtf_file)
-mouse_bugsi_genes <- extract_bugsi_genes(mouse_gtf_file)
+cat("Extracting TUSCO genes...\n")
+human_tusco_genes <- extract_tusco_genes(human_gtf_file)
+mouse_tusco_genes <- extract_tusco_genes(mouse_gtf_file)
 
-cat("Human BUGSI genes:", length(human_bugsi_genes), "\n")
-cat("Mouse BUGSI genes:", length(mouse_bugsi_genes), "\n\n")
+cat("Human TUSCO genes:", length(human_tusco_genes), "\n")
+cat("Mouse TUSCO genes:", length(mouse_tusco_genes), "\n\n")
 
 
 ##################################################################
@@ -383,30 +408,30 @@ cat("Unique genes in combined_tissue_data:", uniqueN(combined_tissue_data$GeneID
 cat("Unique tissues in combined_tissue_data:", uniqueN(combined_tissue_data$Tissue), "\n\n")
 
 #######################################################################
-### 5. Calculate Median Across Tissues for BUGSI Genes             ####
+### 5. Calculate Median Across Tissues for TUSCO Genes             ####
 #######################################################################
 
-# Identify BUGSI genes within the combined data
-combined_tissue_data[, is_bugsi := FALSE]
-combined_tissue_data[Species == "Human" & GeneID %in% human_bugsi_genes, is_bugsi := TRUE]
-combined_tissue_data[Species == "Mouse" & GeneID %in% mouse_bugsi_genes, is_bugsi := TRUE]
+# Identify TUSCO genes within the combined data
+combined_tissue_data[, is_tusco := FALSE]
+combined_tissue_data[Species == "Human" & GeneID %in% human_tusco_genes, is_tusco := TRUE]
+combined_tissue_data[Species == "Mouse" & GeneID %in% mouse_tusco_genes, is_tusco := TRUE]
 
-# Filter for BUGSI genes
-bugsi_data <- combined_tissue_data[is_bugsi == TRUE]
+# Filter for TUSCO genes
+tusco_data <- combined_tissue_data[is_tusco == TRUE]
 
-cat("Number of BUGSI gene records (across tissues):", nrow(bugsi_data), "\n")
+cat("Number of TUSCO gene records (across tissues):", nrow(tusco_data), "\n")
 
-# Calculate the median TPM across all tissues for each BUGSI gene
-bugsi_median_across_tissues <- bugsi_data[
+# Calculate the median TPM across all tissues for each TUSCO gene
+tusco_median_across_tissues <- tusco_data[
   , .(median_value = median(median_tpm, na.rm = TRUE)), # This is median of (median per tissue)
   by = .(Species, GeneID)
 ]
 
 # Add a group label for plotting
-bugsi_median_across_tissues[, Group := "TUSCO"]
+tusco_median_across_tissues[, Group := "TUSCO"]
 
-cat("Number of unique BUGSI genes with cross-tissue median:", nrow(bugsi_median_across_tissues), "\n")
-print(summary(bugsi_median_across_tissues$median_value))
+cat("Number of unique TUSCO genes with cross-tissue median:", nrow(tusco_median_across_tissues), "\n")
+print(summary(tusco_median_across_tissues$median_value))
 cat("\n")
 
 
@@ -437,8 +462,8 @@ rank_median_across_tissues[, Group := "Top 10k Genes"] # Changed label
 # Rename 'rank' to 'GeneID_or_Rank' conceptually for merging/plotting structure
 setnames(rank_median_across_tissues, "rank", "GeneID_or_Rank")
 
-# Rename GeneID in bugsi data for consistency before merging
-setnames(bugsi_median_across_tissues, "GeneID", "GeneID_or_Rank")
+# Rename GeneID in tusco data for consistency before merging
+setnames(tusco_median_across_tissues, "GeneID", "GeneID_or_Rank")
 
 cat("Number of top 10k ranks with cross-tissue median:", nrow(rank_median_across_tissues), "\n")
 print(summary(rank_median_across_tissues$median_value))
@@ -449,9 +474,9 @@ cat("\n")
 ### 7. Prepare Data for Plotting       ###
 ##########################################
 
-# Combine the BUGSI results and Top 10k Rank-based results
+# Combine the TUSCO results and Top 10k Rank-based results
 plot_data <- rbind(
-  bugsi_median_across_tissues[, .(Species, Group, median_value, GeneID_or_Rank)], # Keep GeneID_or_Rank temporarily if needed for debugging, can remove later
+  tusco_median_across_tissues[, .(Species, Group, median_value, GeneID_or_Rank)], # Keep GeneID_or_Rank temporarily if needed for debugging, can remove later
   rank_median_across_tissues[, .(Species, Group, median_value, GeneID_or_Rank)],
   fill = TRUE
 )
@@ -475,7 +500,7 @@ print(table(plot_data$PlotGroup))
 
 
 ############################################################
-### 8. Make Boxplots (BUGSI vs. Top 10k Rank-Based)       ###
+### 8. Make Boxplots (TUSCO vs. Top 10k Rank-Based)       ###
 ############################################################
 
 # --- MODIFIED: Updated group names and colors ---
@@ -502,11 +527,13 @@ p <- ggplot(plot_data, aes(x = Group, y = log_median_value, fill = PlotGroup)) +
       # --- MODIFIED: Updated legend labels ---
       labels = c("Human TUSCO", "Mouse TUSCO", "Human Top 10k Genes", "Mouse Top 10k Genes")
       ) +
+  guides(fill = "none") +
   coord_cartesian(ylim = quantile(plot_data$log_median_value, c(0.01, 0.99), na.rm=TRUE)) + # Zoom in, excluding extreme outliers
   labs(
     x = "",
-    y = bquote(log[10]~"(Median TPM across Tissues + "~.(LOG_OFFSET)~")"), # Use bquote for expression
-    title = "TUSCO Gene Expression vs. Top 10k Rank-Based Expression" # Updated title
+    y = expression(log[10] ("Median TPM")),
+    title = NULL,
+    tag = "d"
   ) +
   # --- MODIFIED: Updated x-axis labels ---
   scale_x_discrete(labels = c("TUSCO" = "TUSCO", "Top_10k_Genes" = "Top 10k Genes")) + # Clean up x-axis labels
@@ -521,9 +548,11 @@ p <- ggplot(plot_data, aes(x = Group, y = log_median_value, fill = PlotGroup)) +
     axis.text.y = element_text(color = "black"),
     axis.title.y = element_text(color = "black"),
     plot.title = element_text(hjust = 0.5), # Center title
-    legend.position = "right",
-    strip.background = element_blank(), # Remove facet label background
-    strip.text = element_text(face = "bold") # Facet labels (Species) - Keep bold
+    legend.position = "none",
+    strip.background = element_rect(fill = "white", color = "black", linewidth = 0.35),
+    strip.text = element_text(face = "plain"),
+    plot.tag = element_text(face = "bold"),
+    plot.tag.position = c(0, 1)
   )
 
 
@@ -531,19 +560,32 @@ p <- ggplot(plot_data, aes(x = Group, y = log_median_value, fill = PlotGroup)) +
 ### 9. Save the Figure to PDF ###
 ################################
 
-if(!dir.exists(output_dir)) {
-  dir.create(output_dir, recursive = TRUE)
-}
-
 # --- MODIFIED: Adjust width and height for smaller font size ---
+# Ensure output and TSV directories exist
+try({ dir.create(dirname(output_file), recursive = TRUE, showWarnings = FALSE) }, silent = TRUE)
+try({ dir.create(file.path(figure_base_dir, "tsv"), recursive = TRUE, showWarnings = FALSE) }, silent = TRUE)
+
 ggsave(
   filename = output_file,
   plot = p,
   device = "pdf",
   width = 4,      # Adjusted width
-  height = 1.8,     # Adjusted height
+  height = 1.8,   # Adjusted height
   units = "in",
   dpi = 300
 )
 
-cat("Boxplot saved to:", output_file, "\n") 
+cat("Boxplot saved to:", output_file, "\n")
+
+# Also export underlying data to TSV alongside minimal metadata
+try({
+  tsv_path <- file.path(figure_base_dir, "tsv", "fig-1d.tsv")
+  # Keep core columns for plotting replication and metadata
+  out_dt <- data.table::copy(plot_data)
+  if (!"PlotGroup" %in% names(out_dt)) out_dt[, PlotGroup := paste0(Species, "_", Group)]
+  out_dt[, figure_id := "fig-1d"]
+  # panel view is a facet per Species; no panel_id needed
+  data.table::fwrite(out_dt[, .(figure_id, Species, Group, PlotGroup, median_value, log_median_value)],
+                     file = tsv_path, sep = "\t")
+  cat("Wrote TSV:", tsv_path, "\n")
+}, silent = TRUE)

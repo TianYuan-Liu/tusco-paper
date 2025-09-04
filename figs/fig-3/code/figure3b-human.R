@@ -11,11 +11,28 @@ suppressPackageStartupMessages({
   library(ggsignif)   # for significance annotations
 })
 
+ 
+
+# Helper to resolve preferred paths: try absolute figs/data, then repo-relative figs/data
+resolve_path <- function(candidates, is_dir = FALSE) {
+  for (p in candidates) {
+    if (!is_dir && file.exists(p)) return(p)
+    if (is_dir && dir.exists(p)) return(p)
+  }
+  return(candidates[[1]])
+}
+
 ###############################################################################
 # 1) Define file paths and pipelines
 ###############################################################################
-sirv_gtf_file <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/spike-ins/lrgasp_sirvs.gtf"
-tusco_tsv_file <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/tusco/tusco_human.tsv" # Changed from bugsi_gtf_file
+sirv_gtf_file <- resolve_path(c(
+  "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/spike-ins/lrgasp_sirvs.gtf",
+  file.path("..","data","spike-ins","lrgasp_sirvs.gtf")
+))
+tusco_tsv_file <- resolve_path(c(
+  "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/tusco/tusco_human.tsv",
+  file.path("..","data","tusco","tusco_human.tsv")
+)) # Changed from bugsi_gtf_file
 
 pipelines <- c(
   "WTC11_drna_ont",
@@ -26,7 +43,10 @@ pipelines <- c(
   "WTC11_cdna_pacbio_ls"
 )
 
-data_dir <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/lrgasp/human" # This might need to be updated if TUSCO data is in a different dir
+data_dir <- resolve_path(c(
+  "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/lrgasp/human",
+  file.path("..","data","lrgasp","human")
+), is_dir = TRUE) # This might need to be updated if TUSCO data is in a different dir
 
 ###############################################################################
 # 2) Read TSV safely
@@ -91,12 +111,13 @@ compute_sirv_bigcats <- function(classification_data, transcript_gtf_file, sirv_
 
   # Define categories
   TP_sirv <- SIRV_transcripts %>%
+    mutate(mono_thresh = ifelse(!is.na(ref_length) & ref_length > 3000, 100, 50)) %>%
     filter(
       subcategory == "reference_match" |
-        (subcategory == "mono-exon" &
-           ref_exons == 1 &
-           abs(diff_to_TSS) < 50 &
-           abs(diff_to_TTS) < 50)
+      (!is.na(ref_length) & ref_length > 3000 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= 100 & abs(diff_to_TTS) <= 100) |
+      (subcategory == "mono-exon" & ref_exons == 1 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= mono_thresh & abs(diff_to_TTS) <= mono_thresh)
     )
   PTP_sirv <- SIRV_transcripts %>%
     filter(structural_category %in% c("full-splice_match","incomplete-splice_match"),
@@ -207,12 +228,13 @@ compute_tusco_bigcats <- function(classification_data, tusco_tsv_file) { # Chang
 
   # Define categories
   TP_tusco <- TUSCO_transcripts %>%
+    mutate(mono_thresh = ifelse(!is.na(ref_length) & ref_length > 3000, 100, 50)) %>%
     filter(
       subcategory == "reference_match" |
-        (subcategory == "mono-exon" &
-           ref_exons == 1 &
-           abs(diff_to_TSS) < 50 &
-           abs(diff_to_TTS) < 50)
+      (!is.na(ref_length) & ref_length > 3000 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= 100 & abs(diff_to_TTS) <= 100) |
+      (subcategory == "mono-exon" & ref_exons == 1 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= mono_thresh & abs(diff_to_TTS) <= mono_thresh)
     )
   PTP_tusco <- TUSCO_transcripts %>%
     filter(structural_category %in% c("full-splice_match","incomplete-splice_match"),
@@ -354,9 +376,9 @@ mean_data$Type         <- factor(mean_data$Type, levels = c("TUSCO","SIRVs")) # 
 # Create significance annotation data
 bracket_data <- my_signifs %>%
   mutate(
-    cat_index  = as.numeric(factor(big_category, levels = c("TP","PTP","FP","FN"))),
-    y_position = 110, # Adjust this based on your data range
-    annotations = star_label
+    cat_index      = as.numeric(factor(big_category, levels = c("TP","PTP","FP","FN"))),
+    y_position     = 110, # Adjust this based on your data range
+    p_value_stars  = star_label
   )
 
 # Ensure correct ordering of categories
@@ -410,7 +432,7 @@ p_single <- ggplot(all_data, aes(x = big_category, y = percentage, fill = Type))
     aes(
       x          = big_category,
       y          = y_position,
-      label      = annotations
+      label      = p_value_stars
     ),
     inherit.aes = FALSE,
     size        = 3,             # Reduced size for smaller font
@@ -451,27 +473,40 @@ p_single <- ggplot(all_data, aes(x = big_category, y = percentage, fill = Type))
 # Display the plot
 print(p_single)
 
-# Define save paths
-save_dir <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-3/plots" # Output plots to the script's directory
-pdf_path <- file.path(save_dir, "figure3b-human.pdf") # Primary output named after script
+## Outputs: write to local ./plot and ./tsv only
+plot_dir <- file.path(".", "plot")
+tsv_dir  <- file.path(".", "tsv")
+if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
+if (!dir.exists(tsv_dir))  dir.create(tsv_dir,  recursive = TRUE)
 
-# Create the directory if it doesn't exist (optional, but good practice)
-if (!dir.exists(save_dir)) {
-  dir.create(save_dir, recursive = TRUE)
-}
+pdf_path <- file.path(plot_dir, "figure3b-human.pdf")
+tsv_path <- file.path(tsv_dir,  "figure3b-human.tsv")
 
-# Save as high-resolution PDF with the current figure size
-ggsave(
-  filename = pdf_path,
-  plot     = p_single,
-  width    = 2.5,   # Further reduced width in inches
-  height   = 1.8,   # Further reduced height in inches
-  units    = "in",
-  device   = cairo_pdf
+# Save PDF using base device to avoid Cairo/OpenMP issues
+pdf(file = pdf_path, width = 2.5, height = 1.8)
+print(p_single)
+dev.off()
+
+# Prepare and write TSV capturing underlying data and minimal metadata
+group_counts <- all_data %>% count(big_category, Type, name = "n")
+raw_block <- all_data %>%
+  left_join(group_counts, by = c("big_category", "Type")) %>%
+  mutate(record_type = "raw")
+
+summary_block <- mean_data %>%
+  mutate(record_type = "summary")
+
+stat_block <- bracket_data %>%
+  select(big_category, y_position, y_line, p_value_stars) %>%
+  mutate(record_type = "stat")
+
+tsv_out <- bind_rows(
+  raw_block %>% mutate(figure_id = "fig-3", panel_id = "3b-human"),
+  summary_block %>% mutate(figure_id = "fig-3", panel_id = "3b-human"),
+  stat_block %>% mutate(figure_id = "fig-3", panel_id = "3b-human")
 )
+readr::write_tsv(tsv_out, tsv_path)
 
 cat("Plot saved successfully:\n")
 cat(" - PDF:", pdf_path, "\n")
-cat(" - PNG:", png_path, "\n")
-
-
+cat(" - TSV:", tsv_path, "\n")

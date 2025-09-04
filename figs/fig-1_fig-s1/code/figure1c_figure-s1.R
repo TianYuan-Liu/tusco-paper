@@ -20,6 +20,10 @@ suppressPackageStartupMessages({
   safe_load("ggplot2")
   safe_load("stringr")
   safe_load("scales")
+  safe_load("Biostrings")  # For GC content analysis
+  safe_load("BSgenome")    # For genome sequences
+  safe_load("GenomicRanges") # For GRanges used in sequence extraction
+  safe_load("IRanges")       # For IRanges used in sequence extraction
 
   # Optional packages for layout
   has_cowplot <- safe_load("cowplot")
@@ -45,7 +49,7 @@ palette_colors <- c(
   # SIRVs/ERCCs/Sequin group - Purples (not plotted in main figures but kept for potential use)
   "SIRVs"           = "#cab2d6",  # light purple
   "ERCCs"           = "#6a3d9a",  # darker purple
-  "Sequins"         = "#413aa3"   # medium purple (User updated)
+  "Sequins"         = "#413aa3"   # medium purple 
 )
 
 # Datasets for the legend (excluding RefSeq as per image)
@@ -80,22 +84,47 @@ all_plot_datasets_ordered <- unique(c(human_datasets_plot, mouse_datasets_plot, 
 exon_levels <- c("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "10+")
 
 ###############################################################
-# Define input files (switched to repo-local data under figs/data)
+# Define input files (support repo-local and absolute figs/data)
 ###############################################################
-# TUSCO transcript selection lists (TSV; no header)
-tusco_human_tsv   <- "figs/data/tusco/tusco_human.tsv"
-tusco_mouse_tsv   <- "figs/data/tusco/tusco_mouse.tsv"
+# Prefer repo-local figs/data; fall back to absolute project path
+data_base_candidates <- c(
+  "figs/data",
+  "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data"
+)
+
+resolve_data <- function(path_in) {
+  # Accept full paths like 'figs/data/...' or a relative fragment like 'reference/human/...'
+  rel <- sub("^figs/data/", "", path_in)
+  # Try as-is first
+  if (file.exists(path_in) || dir.exists(path_in)) return(path_in)
+  # Try candidate bases
+  for (base in data_base_candidates) {
+    cand <- file.path(base, rel)
+    if (file.exists(cand) || dir.exists(cand)) return(cand)
+  }
+  return(path_in) # fallback
+}
+
+# TUSCO annotations (GTF)
+tusco_human_gtf   <- resolve_data("figs/data/tusco/tusco_human.gtf")
+tusco_mouse_gtf   <- resolve_data("figs/data/tusco/tusco_mouse.gtf")
 
 # Reference annotations (GTF/GTF.GZ)
-human_gencode_gtf <- "figs/data/reference/human/gencode.v48.annotation.gtf.gz"
-mouse_gencode_gtf <- "figs/data/reference/mouse/gencode.vM37.annotation.gtf.gz"
-mane_gtf          <- "figs/data/reference/human/mane.v1.4.ensembl_genomic.gtf.gz"  # human only
-human_refseq_gtf  <- "figs/data/reference/human/refseq/GCF_000001405.40_GRCh38.p14_genomic.gtf.gz"
-mouse_refseq_gtf  <- "figs/data/reference/mouse/refseq/GCF_000001635.27_GRCm39_genomic.gtf.gz"
+human_gencode_gtf <- resolve_data("figs/data/reference/human/gencode.v49.annotation.gtf.gz")
+mouse_gencode_gtf <- resolve_data("figs/data/reference/mouse/gencode.vM38.annotation.gtf.gz")
+mane_gtf          <- resolve_data("figs/data/reference/human/mane.v1.4.ensembl_genomic.gtf.gz")  # human only
+human_refseq_gtf  <- resolve_data("figs/data/reference/human/refseq/GCF_000001405.40_GRCh38.p14_genomic.gtf.gz")
+mouse_refseq_gtf  <- resolve_data("figs/data/reference/mouse/refseq/GCF_000001635.27_GRCm39_genomic.gtf.gz")
 
 # Spike-ins
-ercc_sirv_gtf     <- "figs/data/spike-ins/lrgasp_sirvs4.gtf"
-sequin_gtf        <- "figs/data/spike-ins/rnasequin_annotation_2.4.gtf"
+ercc_sirv_gtf     <- resolve_data("figs/data/spike-ins/lrgasp_sirvs4.gtf")
+sequin_gtf        <- resolve_data("figs/data/spike-ins/rnasequin_annotation_2.4.gtf")
+
+# Genome sequences for GC content calculation
+human_genome_fasta <- resolve_data("figs/data/reference/human/lrgasp_grch38_sirvs.fasta")
+mouse_genome_fasta <- resolve_data("figs/data/reference/mouse/mm39_SIRV.fa")
+# Support both local and absolute figs/data
+sequin_genome_fasta <- resolve_data("figs/data/reference/rnasequin_decoychr_2.4.fa")
 
 ###############################################################
 # Functions for data processing (largely unchanged, minor safety checks)
@@ -109,7 +138,7 @@ import_and_standardize <- function(gtf_file, dataset_type, expected_species = NU
   }
 
   tryCatch({
-    gtf <- import(gtf_file)
+    gtf <- rtracklayer::import(gtf_file)
     df <- as.data.frame(gtf)
 
     # Basic check for empty GTF data
@@ -215,6 +244,16 @@ extract_features <- function(df, dataset_name) {
       # Don't return NULL entirely, maybe other features are valid
   }
 
+  # Log median transcript length for this dataset
+  if (nrow(transcript_lengths) > 0) {
+      med_len <- stats::median(transcript_lengths$transcript_length, na.rm = TRUE)
+      n_tx <- nrow(transcript_lengths)
+      # Use scales::comma if available for nicer formatting
+      pretty_med <- tryCatch(scales::comma(round(med_len)), error = function(...) round(med_len))
+      pretty_n <- tryCatch(scales::comma(n_tx), error = function(...) n_tx)
+      message("[Median transcript length] ", dataset_name, ": ", pretty_med, " bp (n=", pretty_n, " transcripts)")
+  }
+
   # Exon counts per transcript
   exon_counts <- exons %>%
     group_by(transcript_id) %>%
@@ -289,41 +328,126 @@ extract_ercc_sirv <- function(df) {
   return(list(ERCC = ercc_df, SIRV = sirv_df))
 }
 
+# Compute per-transcript exonic GC content using provided genome sequences
+calculate_gc_content <- function(feature_list, dataset_name, genome_seq) {
+  if (is.null(genome_seq) || length(genome_seq) == 0) {
+    warning("Genome sequences not available for GC content: ", dataset_name)
+    return(NULL)
+  }
+  if (is.null(feature_list) || is.null(feature_list$exons)) {
+    warning("No exons available for GC content: ", dataset_name)
+    return(NULL)
+  }
+
+  exons_df <- feature_list$exons
+
+  required_cols <- c("seqnames", "start", "end", "transcript_id")
+  missing_cols <- setdiff(required_cols, colnames(exons_df))
+  if (length(missing_cols) > 0) {
+    warning("Exon data missing required columns (", paste(missing_cols, collapse = ", "), ") for ", dataset_name)
+    return(NULL)
+  }
+
+  exons_df <- exons_df %>%
+    mutate(seqnames = as.character(seqnames)) %>%
+    filter(seqnames %in% names(genome_seq)) %>%
+    filter(!is.na(start) & !is.na(end) & end >= start)
+
+  if (nrow(exons_df) == 0) {
+    warning("No exons overlapping available genome contigs for ", dataset_name)
+    return(NULL)
+  }
+
+  gr <- GenomicRanges::GRanges(
+    seqnames = exons_df$seqnames,
+    ranges = IRanges::IRanges(start = exons_df$start, end = exons_df$end),
+    strand = if ("strand" %in% colnames(exons_df)) exons_df$strand else "*"
+  )
+
+  exon_seqs <- tryCatch({
+    Biostrings::getSeq(genome_seq, gr)
+  }, error = function(e) {
+    warning("getSeq failed for ", dataset_name, ": ", e$message)
+    return(NULL)
+  })
+
+  if (is.null(exon_seqs)) return(NULL)
+
+  gc_mat <- Biostrings::letterFrequency(exon_seqs, letters = c("G", "C"), as.prob = FALSE)
+  gc_counts <- rowSums(gc_mat)
+  exon_lengths <- Biostrings::width(exon_seqs)
+
+  gc_df <- data.frame(
+    transcript_id = exons_df$transcript_id,
+    gene_id = if ("gene_id" %in% colnames(exons_df)) exons_df$gene_id else NA_character_,
+    gc_num = gc_counts,
+    len = exon_lengths,
+    stringsAsFactors = FALSE
+  )
+
+  gc_by_tx <- gc_df %>%
+    group_by(transcript_id) %>%
+    summarize(
+      gc_content = if (sum(len) > 0) sum(gc_num) / sum(len) else NA_real_,
+      gene_id = first(gene_id),
+      .groups = "drop"
+    ) %>%
+    filter(!is.na(gc_content))
+
+  if (nrow(gc_by_tx) == 0) return(NULL)
+  gc_by_tx$dataset <- dataset_name
+  return(gc_by_tx)
+}
+
 ###############################################################
 # Load datasets and Extract Features
 ###############################################################
 
-# Helpers to build TUSCO subsets from GENCODE using TSV transcript lists
-read_tusco_transcripts <- function(tsv_path) {
-  if (!file.exists(tsv_path)) {
-    warning("TUSCO TSV not found: ", tsv_path)
-    return(character(0))
-  }
-  tbl <- tryCatch({
-    read.table(tsv_path, header = FALSE, sep = "\t", quote = "", comment.char = "", stringsAsFactors = FALSE, fill = TRUE)
+# Load genome sequences for GC content calculation
+message("Loading genome sequences...")
+human_genome <- NULL
+mouse_genome <- NULL
+sequin_genome <- NULL
+
+if (file.exists(human_genome_fasta)) {
+  tryCatch({
+    human_genome <- readDNAStringSet(human_genome_fasta)
+    # Normalize FASTA names to first token before first whitespace (e.g., '>chr1 AC:...' -> 'chr1')
+    try({ names(human_genome) <- sub("\\s.*$", "", names(human_genome)) }, silent = TRUE)
+    message("Loaded human genome sequences: ", length(human_genome), " sequences")
   }, error = function(e) {
-    warning("Failed to read TUSCO TSV: ", tsv_path, "; ", e$message)
-    return(NULL)
+    warning("Could not load human genome sequences: ", e$message)
   })
-  if (is.null(tbl) || nrow(tbl) == 0) return(character(0))
-  # Expect column 2 to be Ensembl transcript ID (ENST*/ENSMUST*)
-  tx_ids <- unique(tbl[[2]])
-  tx_ids <- tx_ids[!is.na(tx_ids) & nzchar(tx_ids)]
-  return(tx_ids)
+} else {
+  warning("Human genome file not found: ", human_genome_fasta)
 }
 
-subset_to_transcripts <- function(df, transcript_ids) {
-  if (is.null(df) || length(transcript_ids) == 0) return(NULL)
-  if (!"transcript_id" %in% colnames(df)) return(NULL)
-  # Normalize IDs by removing version suffix (e.g., ENSTxxxx.y -> ENSTxxxx)
-  normalize_id <- function(x) {
-    x <- as.character(x)
-    sub("\\..*$", "", x)
-  }
-  tx_core <- unique(normalize_id(transcript_ids))
-  df_core <- df %>% mutate(transcript_id_core = normalize_id(transcript_id))
-  df_core %>% filter(!is.na(transcript_id_core) & transcript_id_core %in% tx_core) %>% select(-transcript_id_core)
+if (file.exists(mouse_genome_fasta)) {
+  tryCatch({
+    mouse_genome <- readDNAStringSet(mouse_genome_fasta)
+    try({ names(mouse_genome) <- sub("\\s.*$", "", names(mouse_genome)) }, silent = TRUE)
+    message("Loaded mouse genome sequences: ", length(mouse_genome), " sequences")
+  }, error = function(e) {
+    warning("Could not load mouse genome sequences: ", e$message)
+  })
+} else {
+  warning("Mouse genome file not found: ", mouse_genome_fasta)
 }
+
+if (file.exists(sequin_genome_fasta)) {
+  tryCatch({
+    sequin_genome <- readDNAStringSet(sequin_genome_fasta)
+    message("Loaded sequin sequences: ", length(sequin_genome), " sequences")
+  }, error = function(e) {
+    warning("Could not load sequin sequences: ", e$message)
+  })
+} else {
+  warning("Sequin genome file not found: ", sequin_genome_fasta)
+}
+
+# Helpers for prior TSV-driven TUSCO subsets retained for reference (unused now)
+# read_tusco_transcripts <- function(tsv_path) { ... }
+# subset_to_transcripts <- function(df, transcript_ids) { ... }
 
 datasets_list <- list()
 
@@ -334,11 +458,9 @@ human_mane_df    <- import_and_standardize(mane_gtf,          "MANE",    "human"
 human_refseq_df  <- import_and_standardize(human_refseq_gtf,  "RefSeq",  "human")
 mouse_refseq_df  <- import_and_standardize(mouse_refseq_gtf,  "RefSeq",  "mouse")
 
-# Build TUSCO subsets
-human_tusco_ids <- read_tusco_transcripts(tusco_human_tsv)
-mouse_tusco_ids <- read_tusco_transcripts(tusco_mouse_tsv)
-human_tusco_df  <- subset_to_transcripts(human_gencode_df, human_tusco_ids)
-mouse_tusco_df  <- subset_to_transcripts(mouse_gencode_df, mouse_tusco_ids)
+# TUSCO from provided GTF files (standard GTFs with gene_id/transcript_id)
+human_tusco_df  <- import_and_standardize(tusco_human_gtf, "GENCODE", "human")
+mouse_tusco_df  <- import_and_standardize(tusco_mouse_gtf, "GENCODE", "mouse")
 
 # Assemble datasets list
 datasets_list[["Human (TUSCO)"]]  <- extract_features(human_tusco_df,   "Human (TUSCO)")
@@ -348,6 +470,26 @@ datasets_list[["Mouse (GENCODE)"]] <- extract_features(mouse_gencode_df, "Mouse 
 datasets_list[["Human (MANE)"]]    <- extract_features(human_mane_df,    "Human (MANE)")
 datasets_list[["Human (RefSeq)"]]  <- extract_features(human_refseq_df,  "Human (RefSeq)")
 datasets_list[["Mouse (RefSeq)"]]  <- extract_features(mouse_refseq_df,  "Mouse (RefSeq)")
+
+# Add GC content to each dataset
+for (dataset_name in names(datasets_list)) {
+  if (!is.null(datasets_list[[dataset_name]])) {
+    # Choose appropriate genome sequence based on dataset
+    genome_seq <- NULL
+    if (grepl("Human", dataset_name, ignore.case = TRUE)) {
+      genome_seq <- human_genome
+    } else if (grepl("Mouse", dataset_name, ignore.case = TRUE)) {
+      genome_seq <- mouse_genome
+    } else if (grepl("Sequins", dataset_name, ignore.case = TRUE)) {
+      genome_seq <- sequin_genome
+    }
+    
+    gc_content <- calculate_gc_content(datasets_list[[dataset_name]], dataset_name, genome_seq)
+    if (!is.null(gc_content)) {
+      datasets_list[[dataset_name]][["gc_content"]] <- gc_content
+    }
+  }
+}
 
 # Spike-ins (Load but don't assign to human/mouse groups initially)
 ercc_sirv_df <- import_and_standardize(ercc_sirv_gtf, "ERCC_SIRV")
@@ -399,11 +541,13 @@ combine_features_subset <- function(datasets_list, feature_name, subset_datasets
 transcript_lengths_human <- combine_features_subset(datasets_list, "transcripts", human_datasets_plot, all_plot_datasets_ordered)
 intron_lengths_human <- combine_features_subset(datasets_list, "introns", human_datasets_plot, all_plot_datasets_ordered)
 exon_counts_human <- combine_features_subset(datasets_list, "exon_counts", human_datasets_plot, all_plot_datasets_ordered)
+gc_content_human <- combine_features_subset(datasets_list, "gc_content", human_datasets_plot, all_plot_datasets_ordered)
 
 # Combine Features for Mouse ONLY (Main Plots)
 transcript_lengths_mouse <- combine_features_subset(datasets_list, "transcripts", mouse_datasets_plot, all_plot_datasets_ordered)
 intron_lengths_mouse <- combine_features_subset(datasets_list, "introns", mouse_datasets_plot, all_plot_datasets_ordered)
 exon_counts_mouse <- combine_features_subset(datasets_list, "exon_counts", mouse_datasets_plot, all_plot_datasets_ordered)
+gc_content_mouse <- combine_features_subset(datasets_list, "gc_content", mouse_datasets_plot, all_plot_datasets_ordered)
 
 # Define final legend order and apply it to combined datasets
 final_legend_order <- c(
@@ -424,9 +568,11 @@ set_final_order <- function(df, order_levels) {
 transcript_lengths_human <- set_final_order(transcript_lengths_human, final_legend_order)
 intron_lengths_human     <- set_final_order(intron_lengths_human, final_legend_order)
 exon_counts_human        <- set_final_order(exon_counts_human, final_legend_order)
+gc_content_human         <- set_final_order(gc_content_human, final_legend_order)
 transcript_lengths_mouse <- set_final_order(transcript_lengths_mouse, final_legend_order)
 intron_lengths_mouse     <- set_final_order(intron_lengths_mouse, final_legend_order)
 exon_counts_mouse        <- set_final_order(exon_counts_mouse, final_legend_order)
+gc_content_mouse         <- set_final_order(gc_content_mouse, final_legend_order)
 
 ###############################################################
 # Nature-style Theme for Plots (Unchanged)
@@ -546,6 +692,30 @@ plot_intron_density <- function(data, title, species_colors) {
     theme(plot.margin = margin(t = 5, r = 5, b = 15, l = 5, unit = "pt")) # Adjust margin for ticks
 }
 
+# 4. GC Content Density Plot
+plot_gc_content <- function(data, title, species_colors) {
+  if (is.null(data) || nrow(data) == 0) return(ggplot() + ggtitle(paste(title, "(No GC Data)")) + nature_theme)
+  
+  # Ensure valid GC content values (0-1)
+  data <- data %>% filter(gc_content >= 0 & gc_content <= 1 & !is.na(gc_content))
+  if (nrow(data) == 0) return(ggplot() + ggtitle(paste(title, "(No Valid GC Content Data)")) + nature_theme)
+
+  ggplot(data, aes(x = gc_content * 100, color = dataset)) +  # Convert to percentage
+    geom_density(linewidth = 0.5, key_glyph = "path") +
+    scale_x_continuous(
+      breaks = seq(20, 80, 10),
+      limits = c(20, 80),
+      expand = expansion(mult = c(0.02, 0.02))
+    ) +
+    scale_color_manual(values = species_colors, name = "Dataset") +
+    labs(
+      title = title,
+      x = "GC Content (%)",
+      y = "Density"
+    ) +
+    nature_theme
+}
+
 
 ###############################################################
 # Generate Plots for Human (No Spike-ins)
@@ -556,6 +726,7 @@ human_palette <- palette_colors[names(palette_colors) %in% human_datasets_plot]
 plot_h_transcript_density <- plot_transcript_density(transcript_lengths_human, "", human_palette)
 plot_h_exon_counts <- plot_exon_counts(exon_counts_human, "", human_palette)
 plot_h_intron_density <- plot_intron_density(intron_lengths_human, "", human_palette)
+plot_h_gc_content <- plot_gc_content(gc_content_human, "", human_palette)
 
 ###############################################################
 # Generate Plots for Mouse (No Spike-ins)
@@ -566,6 +737,7 @@ mouse_palette <- palette_colors[names(palette_colors) %in% mouse_datasets_plot]
 plot_m_transcript_density <- plot_transcript_density(transcript_lengths_mouse, "", mouse_palette)
 plot_m_exon_counts <- plot_exon_counts(exon_counts_mouse, "", mouse_palette)
 plot_m_intron_density <- plot_intron_density(intron_lengths_mouse, "", mouse_palette)
+plot_m_gc_content <- plot_gc_content(gc_content_mouse, "", mouse_palette)
 
 ###############################################################
 # Generate Specific Transcript Length Plot (Human/Mouse TUSCO/GENCODE/RefSeq + ERCCs + SIRVs)
@@ -604,15 +776,16 @@ if (length(valid_transcript_lengths_specific) > 0) {
   # Filter the palette for the target datasets
   specific_palette <- palette_colors[names(palette_colors) %in% target_datasets_specific]
 
-  # Create the plot
+  # Create the plot (legend removed for fig-1c)
   plot_specific_transcript_density <- plot_transcript_density(
     transcript_lengths_specific,
     "", # No title
     specific_palette
-  )
+  ) + theme(legend.position = "none")
 
-  # Define output path and save
-  specific_plot_filename <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-1/plots/transcript_length_distribution.pdf"
+  # Define output path and save (fig-1c)
+  # Save only under this figure folder
+  specific_plot_filename <- "figs/fig-1_fig-s1/plot/fig-1c.pdf"
   # Ensure output directory exists
   try({ dir.create(dirname(specific_plot_filename), recursive = TRUE, showWarnings = FALSE) }, silent = TRUE)
   # Using a smaller size, e.g., half-width, adjusted height
@@ -620,11 +793,39 @@ if (length(valid_transcript_lengths_specific) > 0) {
       specific_plot_filename,
       plot_specific_transcript_density,
       width = 85 / 25.4, # Approx half Nature column width in inches
-      height = 70 / 35, # Adjusted height in inches
+      height = 40 / 25.4, # Reduced height in inches
       dpi = 300,
-      device = cairo_pdf
+      device = "pdf"
   )
   message("Saved specific transcript length plot: ", specific_plot_filename)
+
+  # Also write TSV with underlying data + metadata for fig-1c
+  try({
+    tsv_dir <- "figs/fig-1_fig-s1/tsv"
+    dir.create(tsv_dir, recursive = TRUE, showWarnings = FALSE)
+    fig1c_tsv <- transcript_lengths_specific %>%
+      mutate(
+        figure_id = "fig-1c",
+        panel_id = NA_character_
+      ) %>%
+      select(figure_id, panel_id, dataset, gene_id, transcript_id, transcript_length)
+    # Add per-dataset summary rows as a separate block (n, median)
+    summaries <- transcript_lengths_specific %>%
+      group_by(dataset) %>%
+      summarize(
+        n_transcripts = dplyr::n(),
+        median_transcript_length = stats::median(transcript_length, na.rm = TRUE),
+        .groups = "drop"
+      ) %>%
+      mutate(figure_id = "fig-1c", panel_id = NA_character_) %>%
+      select(figure_id, panel_id, dataset, n_transcripts, median_transcript_length)
+    # Write two sections by appending; consumers can read both
+    out_file <- file.path(tsv_dir, "fig-1c.tsv")
+    suppressWarnings(write.table(fig1c_tsv, out_file, sep = "\t", quote = FALSE, row.names = FALSE))
+    suppressWarnings(write("\n# summaries\n", out_file, append = TRUE))
+    suppressWarnings(write.table(summaries, out_file, sep = "\t", quote = FALSE, row.names = FALSE, append = TRUE))
+    message("Wrote TSV: ", out_file)
+  }, silent = TRUE)
 
 } else {
   warning("No valid transcript data found for the specific plot datasets. Skipping generation.")
@@ -635,7 +836,7 @@ if (length(valid_transcript_lengths_specific) > 0) {
 ###############################################################
 
 # Helper function using patchwork for arrangement and legend
-arrange_and_save_combined <- function(plots_list, filename_base, fig_width_mm, fig_height_mm, ncol = 2, labels = c('a', 'b', 'c', 'd', 'e', 'f')) {
+arrange_and_save_combined <- function(plots_list, filename_base, fig_width_mm, fig_height_mm, ncol = 2, labels = c('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h')) {
 
   # Ensure patchwork is available
   if (!requireNamespace("patchwork", quietly = TRUE)) {
@@ -645,7 +846,7 @@ arrange_and_save_combined <- function(plots_list, filename_base, fig_width_mm, f
   # Remove individual legends
   plots_no_legend <- lapply(plots_list, function(p) p + theme(legend.position = "none"))
 
-  # Arrange using patchwork (assuming 6 plots, 2 cols)
+  # Arrange using patchwork - support both 6 and 8 plots
   if (length(plots_no_legend) == 6 && ncol == 2) {
       p1 <- plots_no_legend[[1]] # Human Transcripts
       p2 <- plots_no_legend[[2]] # Mouse Transcripts
@@ -657,58 +858,130 @@ arrange_and_save_combined <- function(plots_list, filename_base, fig_width_mm, f
       # Arrange in 2 columns, 3 rows
       arranged_plots <- (p1 | p2) / (p3 | p4) / (p5 | p6)
 
-      # Add common legend (collected based on plot data factors) and labels
-      # Specify legend options for the COLLECTED legend via theme()
-      # Use guides() to force nrow = 2 for the collected legend
-      final_figure <- arranged_plots +
-          plot_layout(guides = 'collect') +
-          plot_annotation(tag_levels = 'a') & # Add labels
-          theme(legend.position = 'bottom',       # Position collected legend at the bottom
-                legend.direction = "horizontal",  # Arrange items horizontally
-                legend.box = "horizontal",       # Box layout
-                legend.title = element_blank(),   # No legend title
-                legend.text = element_text(size = 6),
-                legend.key.size = unit(0.4, "lines"), # Slightly smaller key size
-                legend.margin = margin(t = 5, r = 5, b = 5, l = 5, unit = "pt"), # Increased margin around legend content
-                legend.box.background = element_rect(color = "black", linewidth = 0.5), # Add black border
-                plot.tag = element_text(size = 7, face = "bold") # Label styling
-               ) &
-          guides(color = "none", fill = guide_legend(nrow = 2)) # Disable COLOR guide, collect+format FILL guide
+  } else if (length(plots_no_legend) == 8 && ncol == 2) {
+      p1 <- plots_no_legend[[1]] # Human Transcripts
+      p2 <- plots_no_legend[[2]] # Mouse Transcripts
+      p3 <- plots_no_legend[[3]] # Human Exons
+      p4 <- plots_no_legend[[4]] # Mouse Exons
+      p5 <- plots_no_legend[[5]] # Human Introns
+      p6 <- plots_no_legend[[6]] # Mouse Introns
+      p7 <- plots_no_legend[[7]] # Human GC Content
+      p8 <- plots_no_legend[[8]] # Mouse GC Content
+
+      # Arrange in 2 columns, 4 rows
+arranged_plots <- (p1 | p2) / (p3 | p4) / (p5 | p6) / (p7 | p8)
 
   } else {
-     stop("Plot arrangement logic currently assumes 6 plots in 2 columns.")
+     stop("Plot arrangement logic currently supports 6 or 8 plots in 2 columns. Provided: ", length(plots_no_legend), " plots.")
   }
+
+  # Add common legend and labels
+  final_figure <- arranged_plots +
+      plot_layout(guides = 'collect') +
+      plot_annotation(tag_levels = 'a') & # Add labels
+      theme(legend.position = 'bottom',       # Position collected legend at the bottom
+            legend.direction = "horizontal",  # Arrange items horizontally
+            legend.box = "horizontal",       # Box layout
+            legend.title = element_blank(),   # No legend title
+            legend.text = element_text(size = 6),
+            legend.key.size = unit(0.4, "lines"), # Slightly smaller key size
+            legend.margin = margin(t = 5, r = 5, b = 5, l = 5, unit = "pt"), # Increased margin around legend content
+            legend.box.background = element_rect(color = "black", linewidth = 0.5), # Add black border
+            plot.tag = element_text(size = 7, face = "bold") # Label styling
+           ) &
+      guides(color = "none", fill = guide_legend(nrow = 2)) # Disable COLOR guide, collect+format FILL guide
 
   # Save the final figure (applies to both patchwork and fallback)
   width_in <- fig_width_mm / 25.4
   height_in <- fig_height_mm / 25.4
 
   pdf_filename <- paste0(filename_base, ".pdf")
-  png_filename <- paste0(filename_base, ".png")
+
+  # Ensure output directory exists
+  try({ dir.create(dirname(pdf_filename), recursive = TRUE, showWarnings = FALSE) }, silent = TRUE)
 
   # Use ggsave for patchwork object directly
-  ggsave(pdf_filename, final_figure, width = width_in, height = height_in, dpi = 300, device = cairo_pdf)
+  ggsave(pdf_filename, final_figure, width = width_in, height = height_in, dpi = 300, device = "pdf")
   message("Saved: ", pdf_filename)
-  ggsave(png_filename, final_figure, width = width_in, height = height_in, dpi = 300, type = "cairo")
-  message("Saved: ", png_filename)
 }
 
-# Define figure dimensions (e.g., half Nature width, adjustable height)
+# Define figure dimensions (adjusted for 4 rows instead of 3)
 fig_width_mm <- 170 # Full Nature width for 2 columns
-fig_height_mm <- 180 # Adjust height as needed for 3 rows + legend
+fig_height_mm <- 190 # Reduced height for 4 rows + legend
 
-# Combine all plots for the final figure (using plots without spike-ins)
+# Combine all plots for the final figure (now including GC content plots)
 all_plots_main <- list(
   plot_h_transcript_density, plot_m_transcript_density,
   plot_h_exon_counts, plot_m_exon_counts,
-  plot_h_intron_density, plot_m_intron_density
+  plot_h_intron_density, plot_m_intron_density,
+  plot_h_gc_content, plot_m_gc_content
 )
 
-# Arrange and Save Combined 6-Panel Figure (No Spike-ins)
+# Arrange and Save Combined 8-Panel Figure (No Spike-ins, including GC content)
 arrange_and_save_combined(
   plots_list = all_plots_main,
-  filename_base = "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-1/plots/Combined_Comparative_Figure",
+  filename_base = "figs/fig-1_fig-s1/plot/fig-s1",
   fig_width_mm = fig_width_mm,
   fig_height_mm = fig_height_mm,
   ncol = 2 # Arrange in 2 columns
 )
+
+# Prepare and write TSV for fig-s1 capturing data per panel
+try({
+  tsv_dir <- "figs/fig-1_fig-s1/tsv"
+  dir.create(tsv_dir, recursive = TRUE, showWarnings = FALSE)
+
+  # Helper to build exon summary used in the bar plots
+  exon_plot_df <- function(df) {
+    if (is.null(df) || nrow(df) == 0) return(NULL)
+    df %>%
+      mutate(exon_count_group = ifelse(exon_count > 10, "10+", as.character(exon_count))) %>%
+      mutate(exon_count_group = factor(exon_count_group, levels = exon_levels)) %>%
+      group_by(dataset) %>%
+      mutate(total_transcripts_in_dataset = n()) %>%
+      ungroup() %>%
+      group_by(dataset, exon_count_group, total_transcripts_in_dataset) %>%
+      summarize(count = n(), .groups = "drop") %>%
+      mutate(freq = (count / total_transcripts_in_dataset) * 100) %>%
+      ungroup()
+  }
+
+  # Build per-panel data blocks
+  a <- if (!is.null(transcript_lengths_human) && nrow(transcript_lengths_human) > 0) transcript_lengths_human %>% mutate(panel_id = "a") else NULL
+  b <- if (!is.null(transcript_lengths_mouse) && nrow(transcript_lengths_mouse) > 0) transcript_lengths_mouse %>% mutate(panel_id = "b") else NULL
+  c <- exon_plot_df(exon_counts_human)
+  if (!is.null(c)) c$panel_id <- "c"
+  d <- exon_plot_df(exon_counts_mouse)
+  if (!is.null(d)) d$panel_id <- "d"
+  e <- if (!is.null(intron_lengths_human) && nrow(intron_lengths_human) > 0) intron_lengths_human %>% mutate(panel_id = "e") else NULL
+  f <- if (!is.null(intron_lengths_mouse) && nrow(intron_lengths_mouse) > 0) intron_lengths_mouse %>% mutate(panel_id = "f") else NULL
+  g <- if (!is.null(gc_content_human) && nrow(gc_content_human) > 0) gc_content_human %>% mutate(panel_id = "g") else NULL
+  h <- if (!is.null(gc_content_mouse) && nrow(gc_content_mouse) > 0) gc_content_mouse %>% mutate(panel_id = "h") else NULL
+
+  # Tag figure_id and select columns by panel
+  sel_a_b <- function(df) df %>% mutate(figure_id = "fig-s1") %>% select(figure_id, panel_id, dataset, gene_id, transcript_id, transcript_length)
+  sel_e_f <- function(df) df %>% mutate(figure_id = "fig-s1") %>% select(figure_id, panel_id, dataset, gene_id, transcript_id, intron_length)
+  sel_g_h <- function(df) df %>% mutate(figure_id = "fig-s1") %>% select(figure_id, panel_id, dataset, gene_id, transcript_id, gc_content)
+  sel_c_d <- function(df) df %>% mutate(figure_id = "fig-s1") %>% select(figure_id, panel_id, dataset, exon_count_group, total_transcripts_in_dataset, count, freq)
+
+  blocks <- list(
+    if (!is.null(a)) sel_a_b(a),
+    if (!is.null(b)) sel_a_b(b),
+    if (!is.null(c)) sel_c_d(c),
+    if (!is.null(d)) sel_c_d(d),
+    if (!is.null(e)) sel_e_f(e),
+    if (!is.null(f)) sel_e_f(f),
+    if (!is.null(g)) sel_g_h(g),
+    if (!is.null(h)) sel_g_h(h)
+  )
+  blocks <- blocks[!sapply(blocks, is.null)]
+
+  if (length(blocks) > 0) {
+    fig_s1_tsv <- dplyr::bind_rows(blocks)
+    out_file <- file.path(tsv_dir, "fig-s1.tsv")
+    suppressWarnings(write.table(fig_s1_tsv, out_file, sep = "\t", quote = FALSE, row.names = FALSE))
+    message("Wrote TSV: ", out_file)
+  } else {
+    warning("No panel data available to write TSV for fig-s1")
+  }
+}, silent = TRUE)
