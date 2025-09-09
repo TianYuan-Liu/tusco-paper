@@ -82,36 +82,36 @@ slurm-*.out
 **/sqanti3_out/
 
 # Specific large file patterns for this project
-figs/data/nih/**/*.fasta
-figs/data/nih/**/*.tsv
-figs/data/nih/**/sqanti3_*
-figs/data/nih/**/refAnnotation_*
-figs/data/nih/**/*_corrected.*
-figs/data/nih/**/*_classification.txt
-figs/data/nih/**/*_junctions.txt
-figs/data/nih/**/*.genePred
-figs/data/nih/**/*.gff
+data/raw/nih/**/*.fasta
+data/raw/nih/**/*.tsv
+data/raw/nih/**/sqanti3_*
+data/raw/nih/**/refAnnotation_*
+data/raw/nih/**/*_corrected.*
+data/raw/nih/**/*_classification.txt
+data/raw/nih/**/*_junctions.txt
+data/raw/nih/**/*.genePred
+data/raw/nih/**/*.gff
 
 # Bulky data subtrees to avoid accidental staging
 # - LRGASP datasets include massive SQANTI3 and raw read outputs
-figs/data/lrgasp/**
+data/raw/lrgasp/**
 
 # - NIH unions/intersections can produce very large GTFs
-figs/data/nih/union/**/*.gtf
-figs/data/nih/intersection/**/*.gtf
+data/raw/nih/union/**/*.gtf
+data/raw/nih/intersection/**/*.gtf
 
 # - Reference annotations are typically huge; ignore heavy formats
-figs/data/reference/**/*.gtf
-figs/data/reference/**/*.gff
-figs/data/reference/**/*.{fa,fasta,fastq,fq,fa.gz,fasta.gz}
+data/raw/reference/**/*.gtf
+data/raw/reference/**/*.gff
+data/raw/reference/**/*.{fa,fasta,fastq,fq,fa.gz,fasta.gz}
 
 # - Other bulky sources
-figs/data/alphagenome/**
+data/raw/alphagenome/**
 
 # Keep small essential files
-!figs/data/nih/generate_intersections_all_comb.py
-!figs/data/nih/select_transcripts.py
-!figs/data/nih/sqanti3_incremental_qc.slurm
+!data/raw/nih/generate_intersections_all_comb.py
+!data/raw/nih/select_transcripts.py
+!data/raw/nih/sqanti3_incremental_qc.slurm
 !**/*.R
 !**/*.pdf
 !**/*.png
@@ -128,11 +128,24 @@ figs/data/alphagenome/**
 # Do not upload bulky data; keep local only
 # ----------------------------------------------
 # GTEx expression matrices
-figs/data/expression/gtex/*.gct.gz
+data/raw/expression/gtex/*.gct.gz
 
 # LRGASP novel evaluation statistics (very large .txt)
-figs/data/lrgasp/tusco_novel_evl/*.txt
+data/raw/lrgasp/tusco_novel_evl/*.txt
 
 # Specific large figure data exports
-figs/fig-1_fig-s1/tsv/fig-1c.tsv
-figs/fig-1_fig-s1/tsv/fig-s1.tsv
+figs/figure-01/tables/fig-1c.tsv
+figs/figure-01/tables/fig-s1.tsv
+
+# ----------------------------------------------
+# Keep code and figures; exclude data artifacts
+# ----------------------------------------------
+# Exclude all local data (raw/processed/intermediate)
+data/**
+
+# Exclude any legacy data under figs/data
+figs/data/**
+
+# Allow lightweight docs in data folders if present
+!data/README.md
+!data/**/README.md

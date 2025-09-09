@@ -9,20 +9,16 @@ This repository contains code and data for the TUSCO paper (Transcriptome Univer
 ## Repository Structure
 
 ### Figure Organization
-- All figures are organized under `figs/fig-<n>/` (main figures) or `figs/fig-s<n>/` (supplementary figures)
+- All figures are organized under `figs/figure-0N/` (main figures) or `figs/supp-fig-0N/` (supplementary figures)
 - Each figure directory contains:
   - `code/`: R scripts and analysis code to generate the figure
-  - `plot/`: Final vector outputs (PDF preferred)
-  - `tsv/`: Data files and intermediate results
+  - `plots/`: Final vector outputs (PDF preferred)
+  - `tables/`: Data files and intermediate results
 
 ### Data Organization
-- Core data is stored under `figs/data/` with subdirectories:
-  - `tusco/`: TUSCO gene sets and GTF files (`tusco_human.gtf`, `tusco_mouse.gtf`, TSV files)
-  - `lrgasp/`: LRGASP benchmark data
-  - `spike-ins/`: SIRV spike-in data
-  - `reference/`: Reference annotations
-  - `RIN/`: RNA integrity number analysis data
-  - `nih/`: NIH dataset analysis
+- Core data is stored under `data/` with subdirectories:
+  - `data/raw/`: External inputs (lrgasp, spike-ins, reference, expression, nih, etc.)
+  - `data/processed/`: Derived outputs (e.g., `processed/tusco/{hsa,mmu}`)
 
 ## Key Development Commands
 
@@ -30,17 +26,17 @@ This repository contains code and data for the TUSCO paper (Transcriptome Univer
 Most figure generation scripts are executable R scripts with shebangs:
 ```bash
 # Execute individual figure scripts
-./figs/fig-3/code/figure3a-human.R
-./figs/fig-3/code/figure3c.R
+./figs/figure-03/code/figure3a-human.R
+./figs/figure-03/code/figure3c.R
 
 # Or using Rscript
-Rscript figs/fig-3/code/figure3a-human.R
+Rscript figs/figure-03/code/figure3a-human.R
 ```
 
 ### TUSCO Analysis Pipeline
 Key shell scripts for data processing:
-- `figs/fig-5/analysis/tusco_replication_sqanti_pipeline.sh`
-- `figs/fig-5/analysis/rerun_all_intersection_sqanti.sh`
+- `figs/figure-05/analysis/tusco_replication_sqanti_pipeline.sh`
+- `figs/figure-05/analysis/rerun_all_intersection_sqanti.sh`
 
 ## Code Architecture and Conventions
 
@@ -102,15 +98,15 @@ resolve_path <- function(candidates, is_dir = FALSE) {
 ### Generating Figures
 1. Navigate to appropriate figure directory: `cd figs/fig-<n>/code/`
 2. Execute R script: `./script_name.R` or `Rscript script_name.R`
-3. Check output in `../plot/` directory
+3. Check output in `../plots/` directory
 
 ### Adding New Figures
-1. Create directory structure: `figs/fig-<n>/code/` and `figs/fig-<n>/plot/`
+1. Create directory structure: `figs/figure-0N/code/` and `figs/figure-0N/plots/`
 2. Follow existing R script patterns for portability
-3. Use relative paths for data access under `figs/data/`
-4. Export PDFs with explicit dimensions to `plot/` directory
+3. Use relative paths for data access under `data/`
+4. Export PDFs with explicit dimensions to `plots/` directory
 
 ### Working with TUSCO Data
-- Human TUSCO genes: `figs/data/tusco/tusco_human.tsv`
-- Mouse TUSCO genes: `figs/data/tusco/tusco_mouse.tsv`
+- Human TUSCO genes: `data/processed/tusco/hsa/tusco_human.tsv`
+- Mouse TUSCO genes: `data/processed/tusco/mmu/tusco_mouse.tsv`
 - GTF files available for both species with tissue-specific variants
