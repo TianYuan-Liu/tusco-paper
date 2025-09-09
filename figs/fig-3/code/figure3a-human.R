@@ -339,13 +339,12 @@ process_pipeline <- function(pipeline_prefix) {
     filter(associated_gene %in% annotation_data_tusco[[top_id_type_tusco]])
 
   TUSCO_RM <- TUSCO_transcripts %>%
-    mutate(mono_thresh = ifelse(!is.na(ref_length) & ref_length > 3000, 100, 50)) %>%
     filter(
+      # TP rule (uniform): RM or FSM mono-exon with both ends within 50bp
       subcategory == "reference_match" |
-      (!is.na(ref_length) & ref_length > 3000 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
-         abs(diff_to_TSS) <= 100 & abs(diff_to_TTS) <= 100) |
-      (subcategory == "mono-exon" & ref_exons == 1 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
-         abs(diff_to_TSS) <= mono_thresh & abs(diff_to_TTS) <= mono_thresh)
+      (structural_category == "full-splice_match" & !is.na(ref_exons) & ref_exons == 1 &
+         !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= 50 & abs(diff_to_TTS) <= 50)
     )
 
   TP_tusco  <- TUSCO_RM
@@ -386,12 +385,13 @@ process_pipeline <- function(pipeline_prefix) {
         subcategory == "alternative_3end5end"~ "Alternative 3'5'end",
         TRUE ~ subcategory
       ),
-      near_ends_long = !is.na(ref_length) & ref_length > 3000 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
-                       abs(diff_to_TSS) <= 100 & abs(diff_to_TTS) <= 100
+      mono_exon_close50 = structural_category == "full-splice_match" & !is.na(ref_exons) & ref_exons == 1 &
+                          !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+                          abs(diff_to_TSS) <= 50 & abs(diff_to_TTS) <= 50
     ) %>%
     mutate(
       big_category = case_when(
-        structural_category == "full-splice_match" & (subcategory == "Reference match" | near_ends_long)                               ~ "TP",
+        structural_category == "full-splice_match" & (subcategory == "Reference match" | mono_exon_close50)                            ~ "TP",
         (structural_category == "full-splice_match" & subcategory %in% c("Alternative 3'end","Alternative 5'end","Alternative 3'5'end")) ~ "PTP",
         structural_category == "incomplete-splice_match"                                                            ~ "PTP",
         structural_category %in% c("novel_in_catalog","novel_not_in_catalog","genic_intron",
@@ -601,9 +601,9 @@ panel_a <- plot_grid(plotlist = radar_plots, ncol = 6, align = "hv")
 # Add the legend at the bottom of panel a
 panel_a_with_legend <- plot_grid(panel_a, radar_legend, ncol = 1, rel_heights = c(1, 0.1))
 
-# Save Panel A PDF to ./plot and export underlying TSV to ./tsv
-plot_dir <- file.path(".", "plot")
-tsv_dir  <- file.path(".", "tsv")
+# Save Panel A PDF to figs/fig-3/plot and export underlying TSV to figs/fig-3/tsv
+plot_dir <- '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-3/plot'
+tsv_dir  <- '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-3/tsv'
 if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 if (!dir.exists(tsv_dir))  dir.create(tsv_dir,  recursive = TRUE)
 

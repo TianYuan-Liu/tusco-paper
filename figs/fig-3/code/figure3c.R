@@ -153,13 +153,12 @@ calculate_tusco_metrics <- function(classification_data,
   # 3) Define True Positives (TP), Partially True Positives (PTP),
   # False Negatives (FN), and False Positives (FP)
   TUSCO_RM <- TUSCO_transcripts %>%
-    dplyr::mutate(mono_thresh = ifelse(!is.na(ref_length) & ref_length > 3000, 100, 50)) %>%
     dplyr::filter(
+      # TP rule (uniform): RM or FSM mono-exon with both ends within 50bp
       subcategory == "reference_match" |
-      (!is.na(ref_length) & ref_length > 3000 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
-         abs(diff_to_TSS) <= 100 & abs(diff_to_TTS) <= 100) |
-      (subcategory == "mono-exon" & ref_exons == 1 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
-         abs(diff_to_TSS) <= mono_thresh & abs(diff_to_TTS) <= mono_thresh)
+      (structural_category == "full-splice_match" & !is.na(ref_exons) & ref_exons == 1 &
+         !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= 50 & abs(diff_to_TTS) <= 50)
     )
   TP_tusco <- TUSCO_RM
   TP_TUSCO <- unique(TP_tusco$associated_gene)
@@ -201,7 +200,7 @@ calculate_mane_metrics <- function(classification_data, mane_gtf_file) {
     stop("MANE GTF file not found: ", mane_gtf_file)
   }
   mane_gtf <- tryCatch({
-    rtracklayer::import(mane_gtf_file)
+    rtracklayer::import(mane_gtf_file, format = "gtf")
   }, error = function(e) {
     stop("Error importing MANE GTF file ", mane_gtf_file, ": ", e$message)
   })
@@ -436,7 +435,12 @@ process_all_classifications_mane <- function(main_data_dir, mane_gtf_file, outpu
 main_data_dir  <- resolve_path(c('/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/RIN', file.path('..','data','RIN')), is_dir = TRUE)
 tusco_annot_file <- resolve_path(c('/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/tusco/tusco_human.tsv', file.path('..','data','tusco','tusco_human.tsv')))
 output_file    <- NULL
-mane_gtf_file <- resolve_path(c('/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/reference/mane.v1.4.ensembl_genomic.gtf', file.path('..','data','reference','mane.v1.4.ensembl_genomic.gtf')))
+mane_gtf_file <- resolve_path(c(
+  '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/reference/human/mane.v1.4.ensembl_genomic.gtf.gz',
+  '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/reference/mane.v1.4.ensembl_genomic.gtf',
+  file.path('..','data','reference','human','mane.v1.4.ensembl_genomic.gtf.gz'),
+  file.path('..','data','reference','mane.v1.4.ensembl_genomic.gtf')
+))
 output_file_mane <- NULL
 
 # Create the main_data_dir if it doesn't exist, with a note to the user
@@ -675,9 +679,9 @@ final_plot <- ggarrange(
 # Do not display the plot; rely on ggsave to write the file
 # print(final_plot)
 
-# Save the final figure to a PDF file and a single TSV with underlying data
-plot_dir <- file.path(".", "plot")
-tsv_dir  <- file.path(".", "tsv")
+# Save the final figure to figs/fig-3/plot and a single TSV to figs/fig-3/tsv
+plot_dir <- '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-3/plot'
+tsv_dir  <- '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-3/tsv'
 if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 if (!dir.exists(tsv_dir))  dir.create(tsv_dir,  recursive = TRUE)
 

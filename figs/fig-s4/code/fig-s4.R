@@ -300,13 +300,13 @@ for(i in seq_len(nrow(pipeline_specs))){
   # Recompute TP/PTP/FP/FN groups with extended TP rule for multi-exon only
   df_stats <- df_all %>%
     dplyr::mutate(
-      near_ends_long = !is.na(ref_length) & (ref_length > 3000) &
-                       !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
-                       abs(diff_to_TSS) <= 100 & abs(diff_to_TTS) <= 100,
+      mono_exon_close50 = !is.na(ref_exons) & ref_exons == 1 &
+                          !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+                          abs(diff_to_TSS) <= 50 & abs(diff_to_TTS) <= 50,
       group = dplyr::case_when(
         final_label == "Missing" ~ "FN",
         final_label %in% tp_grp ~ "TP",
-        near_ends_long & structural_category %in% c("full-splice_match","incomplete-splice_match") ~ "TP",
+        mono_exon_close50 & structural_category == "full-splice_match" ~ "TP",
         final_label %in% ptp_grp ~ "PTP",
         final_label %in% fp_grp  ~ "FP",
         TRUE ~ NA_character_

@@ -122,3 +122,17 @@ figs/data/alphagenome/**
 
 # Documentation and manuscripts
 # (keep these)
+ 
+# ----------------------------------------------
+# Additional large-file ignores (auto-appended)
+# Do not upload bulky data; keep local only
+# ----------------------------------------------
+# GTEx expression matrices
+figs/data/expression/gtex/*.gct.gz
+
+# LRGASP novel evaluation statistics (very large .txt)
+figs/data/lrgasp/tusco_novel_evl/*.txt
+
+# Specific large figure data exports
+figs/fig-1_fig-s1/tsv/fig-1c.tsv
+figs/fig-1_fig-s1/tsv/fig-s1.tsv

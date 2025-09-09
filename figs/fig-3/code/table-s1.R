@@ -48,7 +48,7 @@ mouse_pipelines  <- c(
   "es_cdna_pacbio_ls"
 )
 
-plots_dir <- "/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-3/plots"
+plots_dir <- '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-3/tsv'
 if (!dir.exists(plots_dir)) dir.create(plots_dir, recursive = TRUE)
 
 # ------------------------------------------------------------
@@ -207,16 +207,12 @@ calculate_cosine_similarity <- function(pipeline_prefix, data_dir, sirv_file, tu
     dplyr::filter(associated_gene %in% annotation_data_tusco[[top_id_type_tusco]])
 
   TUSCO_RM <- TUSCO_transcripts %>%
-    dplyr::mutate(mono_thresh = ifelse(!is.na(ref_length) & ref_length > 3000, 100, 50)) %>%
     dplyr::filter(
-      # Multi-exon Rule 1: reference match
+      # TP rule (uniform): RM or FSM mono-exon with both ends within 50bp
       subcategory == "reference_match" |
-      # Multi-exon Rule 2: long reference and both ends within 100bp
-      (!is.na(ref_length) & ref_length > 3000 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
-         abs(diff_to_TSS) <= 100 & abs(diff_to_TTS) <= 100) |
-      # Single-exon Rule 2: mono-exon with dynamic end threshold
-      (subcategory == "mono-exon" & ref_exons == 1 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
-         abs(diff_to_TSS) <= mono_thresh & abs(diff_to_TTS) <= mono_thresh)
+      (structural_category == "full-splice_match" & !is.na(ref_exons) & ref_exons == 1 &
+         !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= 50 & abs(diff_to_TTS) <= 50)
     )
 
   TP_tusco  <- TUSCO_RM

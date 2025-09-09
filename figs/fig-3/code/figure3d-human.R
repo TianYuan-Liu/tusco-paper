@@ -62,9 +62,9 @@ tusco_file <- resolve_path(c("/Users/tianyuan/Desktop/github_dev/tusco-paper/fig
 # Short-read quant
 short_read_quant <- resolve_path(c("/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/data/lrgasp/short_read_quant/human_quant.genes.sf", file.path("..","data","lrgasp","short_read_quant","human_quant.genes.sf")))
 
-# Output folder
-plot_dir <- file.path(".", "plot")
-tsv_dir  <- file.path(".", "tsv")
+# Output folder (absolute fig-3 dirs)
+plot_dir <- '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-3/plot'
+tsv_dir  <- '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-3/tsv'
 if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 if (!dir.exists(tsv_dir))  dir.create(tsv_dir,  recursive = TRUE)
 

@@ -146,18 +146,12 @@ calculate_tusco_metrics <- function(classification_data, tusco_annotation_df, rT
     filter(associated_gene %in% tusco_annotation_df[[top_id_type]])
 
   TUSCO_RM <- tusco_transcripts %>%
-    mutate(mono_thresh = ifelse(!is.na(ref_length) & ref_length > 3000, 100, 50)) %>%
     filter(
-      # Multi-exon Rule 1: reference match
+      # TP rule (uniform): RM or FSM mono-exon with both ends within 50bp
       subcategory == "reference_match" |
-      # Multi-exon Rule 2: long reference and both ends within 100bp
-      (!is.na(ref_length) & ref_length > 3000 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
-         abs(diff_to_TSS) <= 100 & abs(diff_to_TTS) <= 100) |
-      # Single-exon Rule 1: FSM mono-exon is TP
-      (structural_category == "full-splice_match" & ref_exons == 1) |
-      # Single-exon Rule 2: mono-exon with dynamic end threshold
-      (subcategory == "mono-exon" & ref_exons == 1 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
-         abs(diff_to_TSS) <= mono_thresh & abs(diff_to_TTS) <= mono_thresh)
+      (structural_category == "full-splice_match" & !is.na(ref_exons) & ref_exons == 1 &
+         !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= 50 & abs(diff_to_TTS) <= 50)
     )
   TP_tusco <- TUSCO_RM
   TP_TUSCO_unique_genes <- unique(TP_tusco$associated_gene)

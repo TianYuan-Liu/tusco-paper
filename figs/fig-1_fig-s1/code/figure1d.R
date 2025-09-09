@@ -569,7 +569,7 @@ ggsave(
   filename = output_file,
   plot = p,
   device = "pdf",
-  width = 4,      # Adjusted width
+  width = 85 / 25.4,      # Match fig-1c width (85 mm)
   height = 1.8,   # Adjusted height
   units = "in",
   dpi = 300

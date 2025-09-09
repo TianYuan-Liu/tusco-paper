@@ -235,7 +235,7 @@ extract_features <- function(df, dataset_name) {
     group_by(transcript_id) %>%
     summarize(
       transcript_length = sum(exon_length, na.rm = TRUE),
-      gene_id = first(gene_id), # Take the first gene_id associated with the transcript
+      gene_id = dplyr::first(gene_id), # Take the first gene_id associated with the transcript
       .groups = "drop"
     ) %>% filter(transcript_length > 0) # Remove transcripts with zero length
 
@@ -258,8 +258,8 @@ extract_features <- function(df, dataset_name) {
   exon_counts <- exons %>%
     group_by(transcript_id) %>%
     summarize(
-      exon_count = n(),
-      gene_id = first(gene_id),
+      exon_count = dplyr::n(),
+      gene_id = dplyr::first(gene_id),
       .groups = "drop"
     )
 
@@ -272,7 +272,7 @@ extract_features <- function(df, dataset_name) {
     filter(!is.na(transcript_id) & !is.na(start) & !is.na(end)) %>% # Ensure valid coordinates
     arrange(transcript_id, start) %>%
     group_by(transcript_id) %>%
-    mutate(next_exon_start = lead(start)) %>%
+    mutate(next_exon_start = dplyr::lead(start)) %>%
     filter(!is.na(next_exon_start)) %>% # Only consider exons that have a following exon
     mutate(intron_length = (next_exon_start - 1) - end) %>% # Calculate gap
     filter(intron_length > 0) %>% # Keep only positive gaps (introns)
@@ -289,7 +289,7 @@ extract_features <- function(df, dataset_name) {
     filter(!is.na(gene_id)) %>%
     group_by(gene_id) %>%
     summarize(
-      transcript_count = n(),
+      transcript_count = dplyr::n(),
       .groups = "drop"
     )
 
@@ -389,7 +389,7 @@ calculate_gc_content <- function(feature_list, dataset_name, genome_seq) {
     group_by(transcript_id) %>%
     summarize(
       gc_content = if (sum(len) > 0) sum(gc_num) / sum(len) else NA_real_,
-      gene_id = first(gene_id),
+      gene_id = dplyr::first(gene_id),
       .groups = "drop"
     ) %>%
     filter(!is.na(gc_content))
@@ -573,6 +573,40 @@ transcript_lengths_mouse <- set_final_order(transcript_lengths_mouse, final_lege
 intron_lengths_mouse     <- set_final_order(intron_lengths_mouse, final_legend_order)
 exon_counts_mouse        <- set_final_order(exon_counts_mouse, final_legend_order)
 gc_content_mouse         <- set_final_order(gc_content_mouse, final_legend_order)
+
+###############################################################
+# Helpers: per‑dataset medians for density plots
+###############################################################
+# Generic median summarizer that avoids tidy‑eval dependencies
+summarize_feature_median <- function(df, value_col, panel_id, feature_label,
+                                     value_transform = NULL, figure_id = "fig-s1") {
+  if (is.null(df) || nrow(df) == 0 || !(value_col %in% names(df))) return(NULL)
+  # Keep only rows with a dataset and non‑missing values
+  ok <- !is.na(df[[value_col]]) & !is.na(df$dataset)
+  if (!any(ok)) return(NULL)
+  tmp <- df[ok, c("dataset", value_col)]
+  # Compute per‑dataset median and N using base aggregate (no tidy‑eval)
+  med <- stats::aggregate(tmp[[value_col]], by = list(dataset = tmp$dataset),
+                          FUN = function(x) stats::median(x, na.rm = TRUE))
+  ns  <- stats::aggregate(tmp[[value_col]], by = list(dataset = tmp$dataset),
+                          FUN = function(x) sum(!is.na(x)))
+  out <- merge(med, ns, by = "dataset")
+  # Standardize column names
+  names(out)[names(out) == "x.x"] <- "median"
+  names(out)[names(out) == "x.y"] <- "n"
+  if (!"median" %in% names(out)) names(out)[names(out) == "x"] <- "median"
+  if (!"n" %in% names(out))      names(out)[names(out) == "x"] <- "n"
+  # Optional value transform (e.g., GC proportion -> percent)
+  if (!is.null(value_transform)) out$median <- value_transform(out$median)
+  # Order columns and tag figure/panel/feature
+  out <- out[order(out$dataset), , drop = FALSE]
+  out$figure_id <- figure_id
+  out$panel_id  <- panel_id
+  out$feature   <- feature_label
+  out <- out[, c("figure_id", "panel_id", "feature", "dataset", "n", "median")]
+  rownames(out) <- NULL
+  return(out)
+}
 
 ###############################################################
 # Nature-style Theme for Plots (Unchanged)
@@ -981,6 +1015,35 @@ try({
     out_file <- file.path(tsv_dir, "fig-s1.tsv")
     suppressWarnings(write.table(fig_s1_tsv, out_file, sep = "\t", quote = FALSE, row.names = FALSE))
     message("Wrote TSV: ", out_file)
+
+    # Build and append per‑dataset medians for density plots
+    s1_summaries <- list(
+      summarize_feature_median(transcript_lengths_human, "transcript_length", "a", "transcript_length_bp"),
+      summarize_feature_median(transcript_lengths_mouse, "transcript_length", "b", "transcript_length_bp"),
+      summarize_feature_median(intron_lengths_human,     "intron_length",    "e", "intron_length_bp"),
+      summarize_feature_median(intron_lengths_mouse,     "intron_length",    "f", "intron_length_bp"),
+      summarize_feature_median(gc_content_human,         "gc_content",       "g", "gc_content_percent", function(x) x * 100),
+      summarize_feature_median(gc_content_mouse,         "gc_content",       "h", "gc_content_percent", function(x) x * 100)
+    )
+    s1_summaries <- s1_summaries[!sapply(s1_summaries, is.null)]
+    if (length(s1_summaries) > 0) {
+      fig_s1_summaries <- dplyr::bind_rows(s1_summaries)
+      suppressWarnings(write("\n# summaries\n", out_file, append = TRUE))
+      suppressWarnings(write.table(fig_s1_summaries, out_file, sep = "\t", quote = FALSE, row.names = FALSE, append = TRUE))
+
+      # Log medians to console for quick reference
+      try({
+        for (i in seq_len(nrow(fig_s1_summaries))) {
+          msg <- sprintf("[Median %s, panel %s] %s: %s (n=%s)",
+                         fig_s1_summaries$feature[i],
+                         fig_s1_summaries$panel_id[i],
+                         as.character(fig_s1_summaries$dataset[i]),
+                         formatC(fig_s1_summaries$median[i], digits = 3, format = "fg"),
+                         formatC(fig_s1_summaries$n[i], big.mark = ",", format = "d"))
+          message(msg)
+        }
+      }, silent = TRUE)
+    }
   } else {
     warning("No panel data available to write TSV for fig-s1")
   }

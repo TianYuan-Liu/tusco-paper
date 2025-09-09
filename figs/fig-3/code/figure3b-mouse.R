@@ -218,13 +218,11 @@ compute_tusco_bigcats <- function(classification_data, tusco_tsv_file) {
 
   # Define categories
   TP_tusco <- TUSCO_transcripts %>%
-    mutate(mono_thresh = ifelse(!is.na(ref_length) & ref_length > 3000, 100, 50)) %>%
     filter(
       subcategory == "reference_match" |
-      (!is.na(ref_length) & ref_length > 3000 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
-         abs(diff_to_TSS) <= 100 & abs(diff_to_TTS) <= 100) |
-      (subcategory == "mono-exon" & ref_exons == 1 & !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
-         abs(diff_to_TSS) <= mono_thresh & abs(diff_to_TTS) <= mono_thresh)
+      (structural_category == "full-splice_match" & !is.na(ref_exons) & ref_exons == 1 &
+         !is.na(diff_to_TSS) & !is.na(diff_to_TTS) &
+         abs(diff_to_TSS) <= 50 & abs(diff_to_TTS) <= 50)
     )
   PTP_tusco <- TUSCO_transcripts %>%
     filter(structural_category %in% c("full-splice_match","incomplete-splice_match"),
@@ -465,9 +463,9 @@ resolve_path <- function(candidates, is_dir = FALSE) {
   return(candidates[[1]])
 }
 
-## Outputs: write to local ./plot and ./tsv only
-plot_dir <- file.path(".", "plot")
-tsv_dir  <- file.path(".", "tsv")
+## Outputs: write only to figs/fig-3/plot and figs/fig-3/tsv
+plot_dir <- '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-3/plot'
+tsv_dir  <- '/Users/tianyuan/Desktop/github_dev/tusco-paper/figs/fig-3/tsv'
 if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 if (!dir.exists(tsv_dir))  dir.create(tsv_dir,  recursive = TRUE)
 
