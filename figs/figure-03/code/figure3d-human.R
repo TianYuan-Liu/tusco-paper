@@ -26,9 +26,11 @@ suppressPackageStartupMessages({
   library(dplyr)
   library(readr)
   library(stringr)
-  library(ComplexUpset)  # Replaced UpSetR with ComplexUpset
+  # ComplexUpset is optional; we fall back if unavailable
+  # library(ComplexUpset)
   library(ggplot2)
 })
+has_ComplexUpset <- requireNamespace("ComplexUpset", quietly = TRUE)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # 2) Define file paths/folders
@@ -233,43 +235,49 @@ names(fn_list) <- nice_names
 # 8) Create an UpSet plot using ComplexUpset & improve the look
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-# Convert the list of false negatives into a format suitable for ComplexUpset
-# Using fromList to create a binary incidence matrix
-upset_data <- UpSetR::fromList(fn_list)
+# Convert the list of false negatives to a binary incidence data.frame
+list_to_incidence_df <- function(x) {
+  all_items <- unique(unlist(x, use.names = FALSE))
+  if (length(all_items) == 0) return(data.frame())
+  df <- data.frame(item = all_items, check.names = FALSE)
+  for (nm in names(x)) {
+    df[[nm]] <- df$item %in% x[[nm]]
+  }
+  df
+}
+upset_data <- list_to_incidence_df(fn_list)
 
 # Define the order of sets (reverse order so "Short read" is last)
 sets_order <- rev(names(fn_list))
 
 # Create the UpSet plot using ComplexUpset & improve the look
-p <- upset(
-  upset_data,
-  width_ratio = 0.2,  # Keep width ratio for now
-  height_ratio = 0.7, # Adjust height ratio (smaller value makes matrix taller relative to bars)
-  intersect = sets_order,
-  keep_empty_groups=TRUE, wrap=TRUE, set_sizes=FALSE,
-  base_annotations = list(
-    # Use newlines for the multi-line label above bars
-    'Intersect\\nFN TUSCO\\nGenes' = intersection_size( # Changed from BUGSI
-      counts = TRUE # Rely on defaults for mapping when counts=TRUE
+if (has_ComplexUpset && nrow(upset_data) > 0) {
+  p <- ComplexUpset::upset(
+    upset_data,
+    width_ratio = 0.2,
+    height_ratio = 0.7,
+    intersect = sets_order,
+    keep_empty_groups = TRUE,
+    wrap = TRUE,
+    set_sizes = FALSE,
+    base_annotations = list(
+      'Intersect\nFN TUSCO\nGenes' = ComplexUpset::intersection_size(counts = TRUE)
     )
-  )
-) +
-  # Remove title, subtitle, caption by setting them to NULL
-  labs(
-    title = NULL,
-    subtitle = NULL,
-    caption = NULL,
-    y = "TUSCO\\n(Human)" # Add the Y-axis label, Changed from BUGSI
   ) +
-  theme_minimal(base_size = 7) + # Use theme_minimal and set base font size
-  theme(
-    text = element_text(size = 7),
-    axis.text = element_text(size = 7),
-    axis.title.y = element_text(size = 7, angle = 90, vjust = 0.5), # Style y-axis title
-    strip.text.x = element_text(size = 7), # Control size of labels above matrix intersections
-    plot.margin = margin(5, 5, 5, 5), # Adjust plot margins if needed
-    legend.position = "none"  # Remove legend
-  )
+    labs(title = NULL, subtitle = NULL, caption = NULL, y = "TUSCO\n(Human)") +
+    theme_minimal(base_size = 7) +
+    theme(
+      text = element_text(size = 7),
+      axis.text = element_text(size = 7),
+      axis.title.y = element_text(size = 7, angle = 90, vjust = 0.5),
+      strip.text.x = element_text(size = 7),
+      plot.margin = margin(5, 5, 5, 5),
+      legend.position = "none"
+    )
+} else {
+  p <- NULL
+  message("ComplexUpset not available or empty data; skipping UpSet plot.")
+}
 
 # Save the plot to PDF
 if (FALSE) ggsave(
@@ -282,7 +290,7 @@ if (FALSE) ggsave(
   dpi = 300
 )
 
-message("UpSet plot not generated per request.")
+message("UpSet plot step completed (plot may be skipped).")
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

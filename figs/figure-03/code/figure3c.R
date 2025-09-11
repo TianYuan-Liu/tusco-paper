@@ -8,9 +8,6 @@ suppressPackageStartupMessages({
   library(dplyr)
   library(readr)
   library(stringr)
-  # library(rtracklayer) # Not needed for reading TUSCO TSV
-  # library(GenomicRanges) # May not be needed if not using rtracklayer output directly
-  library(rtracklayer) # Needed for MANE GTF
   library(ggplot2)
   library(ggpubr)
   library(cowplot)  # for get_legend()
@@ -28,6 +25,42 @@ resolve_path <- function(candidates, is_dir = FALSE) {
     if (is_dir && dir.exists(p)) return(p)
   }
   return(candidates[[1]])
+}
+
+# Lightweight GTF importer: uses rtracklayer if available, otherwise parses attributes
+import_gtf_df <- function(gtf_path) {
+  if (requireNamespace("rtracklayer", quietly = TRUE)) {
+    return(as.data.frame(rtracklayer::import(gtf_path)))
+  }
+  cols <- readr::cols(
+    seqnames = readr::col_character(),
+    source   = readr::col_character(),
+    type     = readr::col_character(),
+    start    = readr::col_integer(),
+    end      = readr::col_integer(),
+    score    = readr::col_character(),
+    strand   = readr::col_character(),
+    frame    = readr::col_character(),
+    attribute= readr::col_character()
+  )
+  df <- readr::read_tsv(
+    gtf_path,
+    comment = "#",
+    col_names = c("seqnames","source","type","start","end","score","strand","frame","attribute"),
+    col_types = cols,
+    progress = FALSE
+  )
+  extract_attr <- function(attr, key) {
+    m <- regmatches(attr, regexpr(paste0(key, " \"[^\"]+\""), attr))
+    sub(paste0(key, " \"([^\"]+)\""), "\\1", m)
+  }
+  df$transcript_id <- NA_character_
+  df$gene_id <- NA_character_
+  has_tid <- grepl("transcript_id \"", df$attribute, fixed = TRUE)
+  df$transcript_id[has_tid] <- extract_attr(df$attribute[has_tid], "transcript_id")
+  has_gid <- grepl("gene_id \"", df$attribute, fixed = TRUE)
+  df$gene_id[has_gid] <- extract_attr(df$attribute[has_gid], "gene_id")
+  df
 }
 
 # Detect paths relative to this script so it works from any cwd
@@ -213,13 +246,11 @@ calculate_mane_metrics <- function(classification_data, mane_gtf_file) {
   if (!file.exists(mane_gtf_file)) {
     stop("MANE GTF file not found: ", mane_gtf_file)
   }
-  mane_gtf <- tryCatch({
-    rtracklayer::import(mane_gtf_file, format = "gtf")
+  mane_gtf_df <- tryCatch({
+    import_gtf_df(mane_gtf_file)
   }, error = function(e) {
     stop("Error importing MANE GTF file ", mane_gtf_file, ": ", e$message)
   })
-  
-  mane_gtf_df <- as.data.frame(mane_gtf)
 
   if (!"transcript_id" %in% names(mane_gtf_df)) {
      warning("MANE GTF does not have a 'transcript_id' column. Attempting to use 'transcript'.")

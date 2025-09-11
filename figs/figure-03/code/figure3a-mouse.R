@@ -6,18 +6,12 @@
 message("Loading necessary libraries...")
 suppressPackageStartupMessages({
   library(ggplot2)
-  library(rmarkdown)
   library(tidyr)
   library(dplyr)
   library(readr)
   library(stringr)
-  library(rtracklayer)
-  library(GenomicRanges)
-  library(Gviz)
-  library(fmsb)
   library(cowplot)
   library(grid)
-  library(png)
 })
 
 resolve_path <- function(candidates, is_dir = FALSE) {
@@ -74,6 +68,42 @@ read_tsv_safe <- function(file_path, col_names = TRUE, ...) {
   )
 }
 
+# Lightweight GTF importer: uses rtracklayer if available, otherwise parses attributes
+import_gtf_df <- function(gtf_path) {
+  if (requireNamespace("rtracklayer", quietly = TRUE)) {
+    return(as.data.frame(rtracklayer::import(gtf_path)))
+  }
+  cols <- readr::cols(
+    seqnames = readr::col_character(),
+    source   = readr::col_character(),
+    type     = readr::col_character(),
+    start    = readr::col_integer(),
+    end      = readr::col_integer(),
+    score    = readr::col_character(),
+    strand   = readr::col_character(),
+    frame    = readr::col_character(),
+    attribute= readr::col_character()
+  )
+  df <- readr::read_tsv(
+    gtf_path,
+    comment = "#",
+    col_names = c("seqnames","source","type","start","end","score","strand","frame","attribute"),
+    col_types = cols,
+    progress = FALSE
+  )
+  extract_attr <- function(attr, key) {
+    m <- regmatches(attr, regexpr(paste0(key, " \"[^\"]+\""), attr))
+    sub(paste0(key, " \"([^\"]+)\""), "\\1", m)
+  }
+  df$transcript_id <- NA_character_
+  df$gene_id <- NA_character_
+  has_tid <- grepl("transcript_id \"", df$attribute, fixed = TRUE)
+  df$transcript_id[has_tid] <- extract_attr(df$attribute[has_tid], "transcript_id")
+  has_gid <- grepl("gene_id \"", df$attribute, fixed = TRUE)
+  df$gene_id[has_gid] <- extract_attr(df$attribute[has_gid], "gene_id")
+  df
+}
+
 # Function to format pipeline names
 format_pipeline_name <- function(prefix) {
   parts <- strsplit(prefix, "_")[[1]]
@@ -109,8 +139,7 @@ process_pipeline <- function(pipeline_prefix) {
   ###############################################################
   
   # Define SIRV-related variables
-  sirv_gtf <- rtracklayer::import(sirv.file)
-  sirv_gtf_df <- as.data.frame(sirv_gtf)
+  sirv_gtf_df <- import_gtf_df(sirv.file)
   
   annotation_data_sirv <- sirv_gtf_df %>%
     dplyr::filter(type == "exon") %>%
@@ -119,8 +148,7 @@ process_pipeline <- function(pipeline_prefix) {
   
   rSIRV <- nrow(annotation_data_sirv)
   
-  transcript_gtf <- rtracklayer::import(transcript_gtf_file)
-  transcript_gtf_df <- as.data.frame(transcript_gtf)
+  transcript_gtf_df <- import_gtf_df(transcript_gtf_file)
   
   classification_data_sirv <- classification_data %>%
     mutate(id_type = "transcript_id")
@@ -482,23 +510,44 @@ process_pipeline <- function(pipeline_prefix) {
 
   # Create radar grob without title and without any text or numbers
   radar_grob <- function(df) {
-    tmpfile <- tempfile(fileext = ".png")
-    png(tmpfile, width = 1200, height = 1200, res = 200)
-    par(family = "Helvetica", mar = c(0, 0, 0, 0))
-    radarchart(df,
-               axistype = 0,
-               cglcol = "grey", cglty = 1, cglwd = 1.5,
-               plty = c(1, 1),
-               axislabcol = "black",
-               vlabels = rep("", length(metrics_labels)), # No variable labels
-               pcol = c("#cab2d6", "#1b9e77"), plwd = 8, pty = 16,
-               caxislabels = NULL,            # Remove axis labels
-               vlcex = 0                        # No label size
-    )
-    dev.off()
-    img <- png::readPNG(tmpfile)
-    file.remove(tmpfile)
-    grid::rasterGrob(img)
+    if (requireNamespace("fmsb", quietly = TRUE) && requireNamespace("png", quietly = TRUE)) {
+      tmpfile <- tempfile(fileext = ".png")
+      grDevices::png(tmpfile, width = 1200, height = 1200, res = 200)
+      graphics::par(family = "Helvetica", mar = c(0, 0, 0, 0))
+      fmsb::radarchart(
+        df,
+        axistype = 0,
+        cglcol = "grey", cglty = 1, cglwd = 1.5,
+        plty = c(1, 1),
+        axislabcol = "black",
+        vlabels = rep("", length(metrics_labels)),
+        pcol = c("#cab2d6", "#1b9e77"), plwd = 8, pty = 16,
+        caxislabels = NULL,
+        vlcex = 0
+      )
+      grDevices::dev.off()
+      img <- png::readPNG(tmpfile)
+      unlink(tmpfile)
+      return(grid::rasterGrob(img))
+    }
+    # Fallback: ggplot-based polar polygon
+    vals <- as.data.frame(df)
+    vals$.__row__ <- seq_len(nrow(vals))
+    series <- vals[3:nrow(vals), , drop = FALSE]
+    series$series <- factor(c("SIRV", "TUSCO")[seq_len(nrow(series))], levels = c("SIRV", "TUSCO"))
+    series_long <- tidyr::pivot_longer(series, cols = all_of(metrics_labels), names_to = "metric", values_to = "value")
+    series_long$metric <- factor(series_long$metric, levels = metrics_labels)
+    series_long$idx <- as.integer(series_long$metric)
+    p <- ggplot(series_long, aes(x = idx, y = value, group = series, color = series, fill = series)) +
+      geom_polygon(alpha = 0.15, linewidth = 0.6) +
+      geom_point(size = 1) +
+      scale_x_continuous(breaks = seq_along(metrics_labels), labels = rep("", length(metrics_labels))) +
+      coord_polar() +
+      scale_y_continuous(limits = c(0, 100)) +
+      scale_color_manual(values = c("SIRV" = "#cab2d6", "TUSCO" = "#1b9e77")) +
+      scale_fill_manual(values = c("SIRV" = "#cab2d6", "TUSCO" = "#1b9e77")) +
+      theme_void()
+    ggplotGrob(p)
   }
 
   # Combine radar grob without title

@@ -6,9 +6,7 @@ suppressPackageStartupMessages({
   library(tidyr)
   library(stringr)
   library(readr)
-  library(rtracklayer)
   library(ggplot2)
-  library(ggsignif)   # for significance annotations
 })
 
  

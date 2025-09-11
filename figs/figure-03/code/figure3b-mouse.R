@@ -6,9 +6,7 @@ suppressPackageStartupMessages({
   library(tidyr)
   library(stringr)
   library(readr)
-  library(rtracklayer)
   library(ggplot2)
-  library(ggsignif)   # for significance annotations
 })
 
 ###############################################################################
@@ -62,14 +60,49 @@ read_tsv_safe <- function(file_path, col_names=TRUE, ...) {
   )
 }
 
+# Lightweight GTF importer: uses rtracklayer if available, otherwise parses attributes
+import_gtf_df <- function(gtf_path) {
+  if (requireNamespace("rtracklayer", quietly = TRUE)) {
+    return(as.data.frame(rtracklayer::import(gtf_path)))
+  }
+  cols <- readr::cols(
+    seqnames = readr::col_character(),
+    source   = readr::col_character(),
+    type     = readr::col_character(),
+    start    = readr::col_integer(),
+    end      = readr::col_integer(),
+    score    = readr::col_character(),
+    strand   = readr::col_character(),
+    frame    = readr::col_character(),
+    attribute= readr::col_character()
+  )
+  df <- readr::read_tsv(
+    gtf_path,
+    comment = "#",
+    col_names = c("seqnames","source","type","start","end","score","strand","frame","attribute"),
+    col_types = cols,
+    progress = FALSE
+  )
+  extract_attr <- function(attr, key) {
+    m <- regmatches(attr, regexpr(paste0(key, " \"[^\"]+\""), attr))
+    sub(paste0(key, " \"([^\"]+)\""), "\\1", m)
+  }
+  df$transcript_id <- NA_character_
+  df$gene_id <- NA_character_
+  has_tid <- grepl("transcript_id \"", df$attribute, fixed = TRUE)
+  df$transcript_id[has_tid] <- extract_attr(df$attribute[has_tid], "transcript_id")
+  has_gid <- grepl("gene_id \"", df$attribute, fixed = TRUE)
+  df$gene_id[has_gid] <- extract_attr(df$attribute[has_gid], "gene_id")
+  df
+}
+
 ###############################################################################
 # 3) Compute SIRVs: (TP, PTP, FP, FN)
 ###############################################################################
 compute_sirv_bigcats <- function(classification_data, transcript_gtf_file, sirv_gtf_file) {
 
   # Read SIRV GTF
-  sirv_gtf <- rtracklayer::import(sirv_gtf_file)
-  sirv_gtf_df <- as.data.frame(sirv_gtf)
+  sirv_gtf_df <- import_gtf_df(sirv_gtf_file)
 
   # If "transcript_id" is missing, try copying from "Parent"
   if (!"transcript_id" %in% names(sirv_gtf_df)) {

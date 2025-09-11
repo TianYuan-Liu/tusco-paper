@@ -47,7 +47,7 @@ library(ggplot2)
 library(stringr)
 library(dplyr)
 library(cowplot)
-library(rtracklayer)  # Needed for importing TUSCO GTFs
+library(readr)
 
 # Define a small constant for log transformation to avoid log10(0)
 LOG_OFFSET <- 1e-4
@@ -72,11 +72,35 @@ extract_tusco_genes <- function(gtf_file) {
   # per gene. The Ensembl gene identifier is stored in the metadata column
   # "ensembl" after import with rtracklayer.
 
-  gtf <- tryCatch(rtracklayer::import(gtf_file), error = function(e) {
+  # Prefer rtracklayer if available; otherwise, parse attributes column directly
+  df <- tryCatch({
+    if (requireNamespace("rtracklayer", quietly = TRUE)) {
+      as.data.frame(rtracklayer::import(gtf_file))
+    } else {
+      cols <- readr::cols(
+        seqnames = readr::col_character(),
+        source   = readr::col_character(),
+        type     = readr::col_character(),
+        start    = readr::col_integer(),
+        end      = readr::col_integer(),
+        score    = readr::col_character(),
+        strand   = readr::col_character(),
+        frame    = readr::col_character(),
+        attribute= readr::col_character()
+      )
+      df0 <- readr::read_tsv(
+        gtf_file, comment = "#",
+        col_names = c("seqnames","source","type","start","end","score","strand","frame","attribute"),
+        col_types = cols, progress = FALSE
+      )
+      # Extract gene_id to emulate ensembl column
+      m <- regmatches(df0$attribute, regexpr("gene_id \"[^\"]+\"", df0$attribute))
+      df0$gene_id <- sub("gene_id \"([^\"]+)\"", "\\1", m)
+      df0
+    }
+  }, error = function(e) {
     stop("Failed to import GTF ", gtf_file, ": ", e$message)
   })
-
-  df <- as.data.frame(gtf)
 
   if ("ensembl" %in% colnames(df)) {
     gene_ids <- df$ensembl

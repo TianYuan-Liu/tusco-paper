@@ -29,9 +29,11 @@ suppressPackageStartupMessages({
   library(dplyr)
   library(readr)
   library(stringr)
-  library(ComplexUpset)  # <-- Use ComplexUpset instead of UpSetR
+  # ComplexUpset is optional; we fall back if unavailable
+  # library(ComplexUpset)
   library(ggplot2)
 })
+has_ComplexUpset <- requireNamespace("ComplexUpset", quietly = TRUE)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # 2) Define file paths/folders
@@ -250,44 +252,56 @@ if (base::length(fn_list) == 0) {
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # 8) Create an UpSet plot using ComplexUpset & improve the look
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-upset_data <- UpSetR::fromList(fn_list)
+
+# Convert list to binary incidence data.frame (no UpSetR dependency)
+list_to_incidence_df <- function(x) {
+  all_items <- unique(unlist(x, use.names = FALSE))
+  if (length(all_items) == 0) return(data.frame())
+  df <- data.frame(item = all_items, check.names = FALSE)
+  for (nm in names(x)) {
+    df[[nm]] <- df$item %in% x[[nm]]
+  }
+  df
+}
+upset_data <- list_to_incidence_df(fn_list)
 
 sets_order <- base::rev(base::names(fn_list))
 
-p <- ComplexUpset::upset(
-  upset_data,
-  width_ratio = 0.2,
-  height_ratio = 0.7, # Matched human script for consistency
-  intersect = sets_order,
-  keep_empty_groups = TRUE,
-  wrap = TRUE,
-  set_sizes = FALSE,
-  base_annotations = list(
-    'Intersect\\nFN TUSCO\\nGenes' = ComplexUpset::intersection_size( # Changed label
-      counts = TRUE,
-      text_size = 7, # Keep text_size as in original mouse script for consistency, or adjust if needed
-      point_size = 2 # Keep point_size as in original mouse script
+if (has_ComplexUpset && nrow(upset_data) > 0) {
+  p <- ComplexUpset::upset(
+    upset_data,
+    width_ratio = 0.2,
+    height_ratio = 0.7, # Matched human script for consistency
+    intersect = sets_order,
+    keep_empty_groups = TRUE,
+    wrap = TRUE,
+    set_sizes = FALSE,
+    base_annotations = list(
+      'Intersect\nFN TUSCO\nGenes' = ComplexUpset::intersection_size(counts = TRUE, text_size = 7, point_size = 2)
     )
-  )
-) +
-  ggplot2::labs(
-    title = "False Negative TUSCO Genes UpSet Plot", # Changed from BUGSI
-    subtitle = NULL,
-    caption = NULL,
-    y = "TUSCO\\n(Mouse)" # Added Y-axis label
   ) +
-  ggplot2::theme_minimal(base_size = 7) + # Use theme_minimal and set base font size
-  ggplot2::theme(
-    text = ggplot2::element_text(size = 7),
-    axis.text = ggplot2::element_text(size = 7),
-    plot.title = ggplot2::element_text(size = 7, hjust = 0.5), # Centered title
-    plot.subtitle = ggplot2::element_text(size = 7),
-    plot.caption = ggplot2::element_text(size = 7),
-    axis.title.y = ggplot2::element_text(size = 7, angle = 90, vjust = 0.5), # Style y-axis title
-    strip.text.x = ggplot2::element_text(size = 7), # Control size of labels above matrix intersections
-    plot.margin = ggplot2::margin(5, 5, 5, 5),
-    legend.position = "none"
-  )
+    ggplot2::labs(
+      title = "False Negative TUSCO Genes UpSet Plot",
+      subtitle = NULL,
+      caption = NULL,
+      y = "TUSCO\n(Mouse)"
+    ) +
+    ggplot2::theme_minimal(base_size = 7) +
+    ggplot2::theme(
+      text = ggplot2::element_text(size = 7),
+      axis.text = ggplot2::element_text(size = 7),
+      plot.title = ggplot2::element_text(size = 7, hjust = 0.5),
+      plot.subtitle = ggplot2::element_text(size = 7),
+      plot.caption = ggplot2::element_text(size = 7),
+      axis.title.y = ggplot2::element_text(size = 7, angle = 90, vjust = 0.5),
+      strip.text.x = ggplot2::element_text(size = 7),
+      plot.margin = ggplot2::margin(5, 5, 5, 5),
+      legend.position = "none"
+    )
+} else {
+  p <- NULL
+  base::message("ComplexUpset not available or empty data; skipping UpSet plot.")
+}
 
 ## No separate output_dir; use plot_dir/tsv_dir defined above
 
@@ -301,7 +315,7 @@ if (FALSE) ggplot2::ggsave(
   dpi = 300
 )
 
-base::message("UpSet plot not generated per request.")
+base::message("UpSet plot step completed (plot may be skipped).")
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # 9) Print out the intersection of all sets (common FNs)
