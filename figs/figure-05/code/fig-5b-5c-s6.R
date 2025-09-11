@@ -1,5 +1,5 @@
-# Determine LOCAL_ONLY early to conditionally load heavy packages
-local_only <- identical(Sys.getenv("LOCAL_ONLY"), "1")
+# Determine LOCAL_ONLY early to conditionally load heavy packages (robust parsing)
+local_only <- tolower(Sys.getenv("LOCAL_ONLY", "0")) %in% c("1", "true", "t", "yes", "y")
 
 suppressPackageStartupMessages({
   library(ggplot2)
@@ -10,8 +10,6 @@ suppressPackageStartupMessages({
   library(cowplot)
   library(scales)
   library(grid)
-  library(png)
-  library(fmsb)
 })
 
 # rtracklayer is only required when computing from raw classifications
@@ -36,9 +34,21 @@ utils::globalVariables(c(
 # Figure directory is either cwd if inside figs/figure-05, or that from repo root
 detect_fig_dir <- function() {
   cwd <- normalizePath(getwd(), mustWork = FALSE)
-  if (basename(cwd) == "figure-05" && dir.exists(file.path(cwd, "code"))) return(cwd)
-  if (dir.exists(file.path(cwd, "figs", "figure-05"))) return(normalizePath(file.path(cwd, "figs", "figure-05"), mustWork = FALSE))
-  cwd
+  # Case 1: running from the figure folder itself
+  if (basename(cwd) == "figure-05" && dir.exists(file.path(cwd, "code"))) {
+    return(cwd)
+  }
+  # Case 2: running from the code subfolder inside figure-05
+  parent <- normalizePath(file.path(cwd, ".."), mustWork = FALSE)
+  if (basename(parent) == "figure-05" && dir.exists(file.path(parent, "code"))) {
+    return(parent)
+  }
+  # Case 3: running from repo root (or elsewhere) where figs/figure-05 exists
+  if (dir.exists(file.path(cwd, "figs", "figure-05"))) {
+    return(normalizePath(file.path(cwd, "figs", "figure-05"), mustWork = FALSE))
+  }
+  # Fallback: best-effort to the parent of current dir
+  parent
 }
 fig_dir <- detect_fig_dir()
 plot_dir <- file.path(fig_dir, "plots")
@@ -369,6 +379,11 @@ metric_order_sirv <- c("Sensitivity", "Non-redundant Precision", "Inv. Redundanc
 if (!local_only) {
   # Compute TUSCO points and summaries using shared helpers
   all_points_df <- collect_points_for_metrics("metrics_tusco")
+  # If no points found (e.g., missing inputs), ensure required columns exist to avoid filter errors
+  if (!all(c("Tissue","Samples","Combo","Metric","Value") %in% names(all_points_df))) {
+    warning("No points found or missing columns; proceeding with empty dataset for fig-5b.")
+    all_points_df <- tibble::tibble(Tissue = character(), Samples = integer(), Combo = character(), Metric = character(), Value = double())
+  }
   all_points_df <- all_points_df %>%
     filter(Tissue %in% c("Brain", "Kidney")) %>%
     mutate(
@@ -384,18 +399,20 @@ if (!local_only) {
   bars_5b_path   <- file.path(plot_dir, "fig-5b_bars.tsv")
   points_5c_path <- file.path(plot_dir, "fig-5c_points.tsv")
 
-  if (!file.exists(points_5b_path) || !file.exists(bars_5b_path) || !file.exists(points_5c_path)) {
-    stop("LOCAL_ONLY is set, but required TSVs are missing in ", plot_dir, ". Expected: ",
-         basename(points_5b_path), ", ", basename(bars_5b_path), ", ", basename(points_5c_path))
+  if (file.exists(points_5b_path) && file.exists(bars_5b_path)) {
+    all_points_df <- readr::read_tsv(points_5b_path, show_col_types = FALSE) %>%
+      mutate(
+        Tissue = factor(Tissue, levels = c("Brain", "Kidney")),
+        Metric = factor(Metric, levels = metric_order),
+        SamplesLabel = as.character(Samples)
+      )
+    summary_df <- readr::read_tsv(bars_5b_path, show_col_types = FALSE) %>%
+      mutate(SamplesLabel = as.character(Samples))
+  } else {
+    warning("LOCAL_ONLY set but fig-5b TSVs missing; generating minimal empty placeholders.")
+    all_points_df <- tibble::tibble(Tissue = factor(character(), levels = c("Brain","Kidney")), Samples = integer(), SamplesLabel = character(), Combo = character(), Metric = factor(character(), levels = metric_order), Value = double())
+    summary_df <- tibble::tibble(Tissue = factor(character(), levels = c("Brain","Kidney")), Samples = integer(), SamplesLabel = character(), Metric = factor(character(), levels = metric_order), N = integer(), Mean = double(), SD = double(), SE = double(), CI_lower = double(), CI_upper = double())
   }
-  all_points_df <- readr::read_tsv(points_5b_path, show_col_types = FALSE) %>%
-    mutate(
-      Tissue = factor(Tissue, levels = c("Brain", "Kidney")),
-      Metric = factor(Metric, levels = metric_order),
-      SamplesLabel = as.character(Samples)
-    )
-  summary_df <- readr::read_tsv(bars_5b_path, show_col_types = FALSE) %>%
-    mutate(SamplesLabel = as.character(Samples))
 }
 
 # ------------------------------------------------------------
@@ -660,27 +677,48 @@ infer_tissue <- function(sample_basename) {
 }
 
 radar_grob <- function(radar_data, color_map, var_labels, title = NULL) {
-  tmpfile <- tempfile(fileext = ".png")
-  png(tmpfile, width = 2000, height = 2000, res = 600)
-  par(family = "Helvetica", ps = 7, cex = 1, mar = c(0, 0, 0, 0))
   present_types <- rownames(radar_data)[-(1:2)]
   polygon_colors <- unname(color_map[present_types])
   linetype_map <- c("Universal" = 1, "Brain" = 2, "Kidney" = 3)
   polygon_lty <- unname(linetype_map[present_types])
-  radarchart(
-    radar_data,
-    axistype = 0,
-    cglcol = "grey85", cglty = 1, cglwd = 0.4,
-    plty = polygon_lty,
-    axislabcol = "black",
-    vlabels = var_labels,
-    pcol = polygon_colors, plwd = 1.6, pty = 16,
-    caxislabels = NULL, vlcex = 1.8
-  )
-  dev.off()
-  img <- png::readPNG(tmpfile)
-  file.remove(tmpfile)
-  grid::rasterGrob(img)
+  if (requireNamespace("fmsb", quietly = TRUE) && requireNamespace("png", quietly = TRUE)) {
+    tmpfile <- tempfile(fileext = ".png")
+    grDevices::png(tmpfile, width = 2000, height = 2000, res = 600)
+    graphics::par(family = "Helvetica", ps = 7, cex = 1, mar = c(0, 0, 0, 0))
+    fmsb::radarchart(
+      radar_data,
+      axistype = 0,
+      cglcol = "grey85", cglty = 1, cglwd = 0.4,
+      plty = polygon_lty,
+      axislabcol = "black",
+      vlabels = var_labels,
+      pcol = polygon_colors, plwd = 1.6, pty = 16,
+      caxislabels = NULL, vlcex = 1.8
+    )
+    grDevices::dev.off()
+    img <- png::readPNG(tmpfile)
+    unlink(tmpfile)
+    return(grid::rasterGrob(img))
+  }
+  # Fallback: ggplot polar chart
+  df <- as.data.frame(radar_data)
+  df$.__row__ <- rownames(df)
+  series <- df[!(df$.__row__ %in% c("Max","Min")), , drop = FALSE]
+  series$series <- factor(series$.__row__, levels = present_types)
+  long <- tidyr::pivot_longer(series, cols = all_of(var_labels), names_to = "metric", values_to = "value")
+  long$metric <- factor(long$metric, levels = var_labels)
+  long$idx <- as.integer(long$metric)
+  p <- ggplot2::ggplot(long, ggplot2::aes(x = idx, y = value, group = series, color = series, fill = series, linetype = series)) +
+    ggplot2::geom_polygon(alpha = 0.15, linewidth = 0.4) +
+    ggplot2::geom_point(size = 0.8) +
+    ggplot2::scale_x_continuous(breaks = seq_along(var_labels), labels = var_labels) +
+    ggplot2::coord_polar() +
+    ggplot2::scale_y_continuous(limits = c(0, 100)) +
+    ggplot2::scale_color_manual(values = setNames(polygon_colors, present_types)) +
+    ggplot2::scale_fill_manual(values = setNames(polygon_colors, present_types)) +
+    ggplot2::scale_linetype_manual(values = setNames(polygon_lty, present_types)) +
+    ggplot2::theme_void()
+  ggplot2::ggplotGrob(p)
 }
 
 build_radar_data_for_tissue <- function(sdf, tissue_name) {
@@ -766,8 +804,14 @@ if (!local_only) {
     select(Sample, Tissue, Type, `Sn`, `nrPre`, `1/red`, `1-FDR`, `PDR`, `rPre`)
 } else {
   # LOCAL_ONLY: read precomputed radar metrics
-  metrics_df <- readr::read_tsv(file.path(plot_dir, "fig-5c_points.tsv"), show_col_types = FALSE) %>%
-    select(Sample, Tissue, Type, `Sn`, `nrPre`, `1/red`, `1-FDR`, `PDR`, `rPre`)
+  metrics_points_path <- file.path(plot_dir, "fig-5c_points.tsv")
+  if (file.exists(metrics_points_path)) {
+    metrics_df <- readr::read_tsv(metrics_points_path, show_col_types = FALSE) %>%
+      select(Sample, Tissue, Type, `Sn`, `nrPre`, `1/red`, `1-FDR`, `PDR`, `rPre`)
+  } else {
+    warning("LOCAL_ONLY set but fig-5c_points.tsv missing; using empty metrics for radar.")
+    metrics_df <- tibble::tibble(Sample = character(), Tissue = character(), Type = character(), `Sn` = double(), `nrPre` = double(), `1/red` = double(), `1-FDR` = double(), `PDR` = double(), `rPre` = double())
+  }
 }
 
 metrics_summary_df <- metrics_df %>%

@@ -195,7 +195,8 @@ for(i in seq_len(nrow(pipeline_specs))){
 
   df_all <- purrr::map_dfr(existing_samples, function(sprefix){
     species <- ifelse(str_detect(sprefix,"^wtc11"),"human","mouse")
-    tusco_file <- file.path(tusco_data_dir,
+    species_dir <- if(species=="human") "hsa" else "mmu"
+    tusco_file <- file.path(tusco_data_dir, species_dir,
                             if(species=="human") "tusco_human_multi_exon.tsv" else "tusco_mouse_multi_exon.tsv")
     if(file.exists(tusco_file)){
       tusco_df <- readr::read_tsv(tusco_file, show_col_types = FALSE, progress = FALSE,

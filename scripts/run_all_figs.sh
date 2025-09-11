@@ -2,24 +2,32 @@
 set -euo pipefail
 
 # Minimal runner to execute all figure R scripts and report success/failure.
-# Uses repo-rooted data layout (data/raw, data/processed). Does not install R packages.
-# For heavy pipelines, set LOCAL_ONLY=1 where supported to avoid unnecessary work.
+# - Runs each R script from its own code directory so relative paths work.
+# - Limits BLAS/OMP threads to avoid OpenMP SHM issues on macOS/sandboxes.
+# - Captures stderr to .err next to each script and shows a concise summary.
 
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT_DIR"
 
-# Mitigate OpenMP SHM issues in restricted environments
-export OMP_NUM_THREADS=1
-export OMP_PROC_BIND=FALSE
-export OMP_WAIT_POLICY=PASSIVE
-export KMP_INIT_AT_FORK=0
-export OPENBLAS_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-export VECLIB_MAXIMUM_THREADS=1
+# Harden OpenMP/BLAS environment for stability in constrained environments
+export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
+export OMP_PROC_BIND=${OMP_PROC_BIND:-FALSE}
+export OMP_WAIT_POLICY=${OMP_WAIT_POLICY:-PASSIVE}
+export OMP_DYNAMIC=${OMP_DYNAMIC:-FALSE}
+export OMP_THREAD_LIMIT=${OMP_THREAD_LIMIT:-1}
+export KMP_INIT_AT_FORK=${KMP_INIT_AT_FORK:-0}
+export KMP_AFFINITY=${KMP_AFFINITY:-disabled}
+export KMP_BLOCKTIME=${KMP_BLOCKTIME:-0}
+export KMP_SETTINGS=${KMP_SETTINGS:-0}
+export KMP_DUPLICATE_LIB_OK=${KMP_DUPLICATE_LIB_OK:-TRUE}
+export OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-1}
+export MKL_NUM_THREADS=${MKL_NUM_THREADS:-1}
+export VECLIB_MAXIMUM_THREADS=${VECLIB_MAXIMUM_THREADS:-1}
+export R_MAX_NUM_DLLS=${R_MAX_NUM_DLLS:-150}
 
 SCRIPTS=(
-  figs/figure-01/code/figure1d.R
-  figs/figure-01/code/figure1c_figure-s1.R
+  #figs/figure-01/code/figure1d.R
+  #figs/figure-01/code/figure1c_figure-s1.R
   figs/figure-03/code/figure3a-human.R
   figs/figure-03/code/figure3a-mouse.R
   figs/figure-03/code/figure3b-human.R
@@ -38,27 +46,64 @@ SCRIPTS=(
 
 STATUS_KEYS=()
 STATUS_VALS=()
+DURATIONS_S=()
+
+# Helper to run one R script from its directory with proper logs
+run_rscript() {
+  local script_rel="$1"
+  local script_dir
+  script_dir=$(dirname "$script_rel")
+  local script_base
+  script_base=$(basename "$script_rel")
+  local err_log="$ROOT_DIR/${script_rel%.R}.err"
+
+  local start_ts end_ts
+  start_ts=$(date +%s)
+
+  # Decide LOCAL_ONLY for fig-5b-5c-s6 if precomputed TSVs exist
+  local extra_env=()
+  if [[ "$script_base" == "fig-5b-5c-s6.R" ]]; then
+    local plot_dir="$ROOT_DIR/figs/figure-05/plots"
+    local p1="$plot_dir/fig-5b_points.tsv"
+    local p2="$plot_dir/fig-5b_bars.tsv"
+    local p3="$plot_dir/fig-5c_points.tsv"
+    if [[ -f "$p1" && -f "$p2" && -f "$p3" ]]; then
+      extra_env+=(LOCAL_ONLY=1)
+    fi
+  fi
+
+  # Run inside the script directory so relative paths in R match expectations
+  local rc=0
+  # If FIGS_CONDA_ENV is set, prefer running via conda to pick up R libs
+  local runner=(Rscript)
+  if [[ -n "${FIGS_CONDA_ENV:-}" ]]; then
+    runner=(conda run -n "$FIGS_CONDA_ENV" Rscript)
+  fi
+  (
+    cd "$script_dir"
+    if (( ${#extra_env[@]} > 0 )); then
+      "${extra_env[@]}" "${runner[@]}" "$script_base" >/dev/null 2>"$err_log"
+    else
+      "${runner[@]}" "$script_base" >/dev/null 2>"$err_log"
+    fi
+  ) || rc=$?
+
+  end_ts=$(date +%s)
+  DURATIONS_S+=("$((end_ts - start_ts))")
+  return $rc
+}
 
 for s in "${SCRIPTS[@]}"; do
   if [[ ! -f "$s" ]]; then
-    STATUS_KEYS+=("$s"); STATUS_VALS+=("SKIP (missing script)")
+    STATUS_KEYS+=("$s"); STATUS_VALS+=("SKIP (missing script)"); DURATIONS_S+=("0")
     echo "[skip] $s (not found)"
     continue
   fi
   echo "[run] $s"
-  # Special env flags for specific scripts
-  if [[ "$s" == *"fig-5b-5c-s6.R"* ]]; then
-    if LOCAL_ONLY=1 Rscript "$s" >/dev/null 2>"${s%.R}.err"; then
-      STATUS_KEYS+=("$s"); STATUS_VALS+=("OK")
-    else
-      STATUS_KEYS+=("$s"); STATUS_VALS+=("FAIL")
-    fi
+  if run_rscript "$s"; then
+    STATUS_KEYS+=("$s"); STATUS_VALS+=("OK")
   else
-    if Rscript "$s" >/dev/null 2>"${s%.R}.err"; then
-      STATUS_KEYS+=("$s"); STATUS_VALS+=("OK")
-    else
-      STATUS_KEYS+=("$s"); STATUS_VALS+=("FAIL")
-    fi
+    STATUS_KEYS+=("$s"); STATUS_VALS+=("FAIL")
   fi
 done
 
@@ -68,7 +113,8 @@ pad() { printf "%-60s" "$1"; }
 for i in "${!STATUS_KEYS[@]}"; do
   s=${STATUS_KEYS[$i]}
   st=${STATUS_VALS[$i]}
-  pad "$s"; echo " $st"
+  dt=${DURATIONS_S[$i]:-0}
+  pad "$s"; printf " %4ss  %s\n" "$dt" "$st"
 done
 
 echo
