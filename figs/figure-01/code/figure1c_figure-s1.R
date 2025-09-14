@@ -869,7 +869,7 @@ if (length(valid_transcript_lengths_specific) > 0) {
     suppressWarnings(write.table(fig1c_tsv, out_file, sep = "\t", quote = FALSE, row.names = FALSE))
     suppressWarnings(write("\n# summaries\n", out_file, append = TRUE))
     suppressWarnings(write.table(summaries, out_file, sep = "\t", quote = FALSE, row.names = FALSE, append = TRUE))
-    message("Wrote TSV: ", out_file)
+    message("Saved data: ", out_file)
   }, silent = TRUE)
 
 } else {
@@ -1025,7 +1025,7 @@ try({
     fig_s1_tsv <- dplyr::bind_rows(blocks)
     out_file <- file.path(tsv_dir, "fig-s1.tsv")
     suppressWarnings(write.table(fig_s1_tsv, out_file, sep = "\t", quote = FALSE, row.names = FALSE))
-    message("Wrote TSV: ", out_file)
+    message("Saved data: ", out_file)
 
     # Build and append per‑dataset medians for density plots
     s1_summaries <- list(

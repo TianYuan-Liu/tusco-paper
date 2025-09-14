@@ -1,6 +1,43 @@
+#!/usr/bin/env Rscript
+
 ###############################################################
-# Revised Code for Panel A - Mouse Version
+# Figure 3A Mouse - TUSCO vs SIRVs Evaluation
+# Usage: Rscript figure3a-mouse.R [output_dir] [width] [height]
 ###############################################################
+
+# =============================================================================
+# 1. ARGUMENT PARSING AND SETUP
+# =============================================================================
+
+# Source utilities library
+if (file.exists("../../../scripts/figure_utils.R")) {
+  source("../../../scripts/figure_utils.R")
+} else {
+  # Fallback - define minimal functions inline
+  parse_figure_args <- function(defaults = list(out_dir = "..", width = 24, height = 4)) {
+    args <- commandArgs(trailingOnly = TRUE)
+    result <- defaults
+    if (length(args) > 0) result$out_dir <- args[1]
+    if (length(args) > 1) result$width <- as.numeric(args[2])
+    if (length(args) > 2) result$height <- as.numeric(args[3])
+    return(result)
+  }
+  
+  resolve_path <- function(candidates, is_dir = FALSE) {
+    for (p in candidates) {
+      if (!is_dir && file.exists(p)) return(p)
+      if (is_dir && dir.exists(p)) return(p)
+    }
+    return(candidates[[1]])
+  }
+}
+
+# Parse command line arguments
+params <- parse_figure_args(defaults = list(
+  out_dir = "..",           # Output to figure-03/
+  width = 24,               # Original width for 6-panel radar plot
+  height = 4                # Original height
+))
 
 # Load necessary libraries
 message("Loading necessary libraries...")
@@ -13,14 +50,6 @@ suppressPackageStartupMessages({
   library(cowplot)
   library(grid)
 })
-
-resolve_path <- function(candidates, is_dir = FALSE) {
-  for (p in candidates) {
-    if (!is_dir && file.exists(p)) return(p)
-    if (is_dir && dir.exists(p)) return(p)
-  }
-  return(candidates[[1]])
-}
 
 # Define global variables
 # Paths to fixed files (adjust as needed)
@@ -644,7 +673,9 @@ process_pipeline <- function(pipeline_prefix) {
       tusco = metrics_values_tusco,
       pipeline = pipeline_prefix,
       stringsAsFactors = FALSE
-    )
+    ),
+    fp_genes_tusco = FP_tusco %>% select(associated_gene) %>% distinct(),
+    fp_genes_sirv = FP_sirv %>% select(associated_transcript) %>% distinct()
   )
 }
 
@@ -701,17 +732,19 @@ panel_a_with_legend <- plot_grid(panel_a, radar_legend, ncol = 1, rel_heights = 
 # ------------------------------------------------------------------
 
 # Save Panel A outputs under this figure folder
-plot_dir <- base::file.path("..", "plots")
-tsv_dir  <- base::file.path("..", "tables")
-if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
-if (!dir.exists(tsv_dir))  dir.create(tsv_dir,  recursive = TRUE)
+# Create output directories
+plot_dir <- file.path(params$out_dir, "plots")
+tsv_dir <- file.path(params$out_dir, "tables")
+dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(tsv_dir, recursive = TRUE, showWarnings = FALSE)
 
-pdf_path <- file.path(plot_dir, "figure3a-mouse.pdf")
-tsv_path <- file.path(tsv_dir,  "figure3a-mouse.tsv")
+pdf_path <- file.path(plot_dir, "fig-3a-mouse.pdf")
+tsv_path <- file.path(tsv_dir,  "fig-3a-mouse.tsv")
 
-pdf(file = pdf_path, width = 24, height = 4)
+pdf(file = pdf_path, width = params$width, height = params$height)
 print(panel_a_with_legend)
 dev.off()
+message("Saved plot: ", pdf_path)
 
 # Consolidate underlying data for TSV
 bar_data <- dplyr::bind_rows(lapply(results, function(x) {
@@ -731,3 +764,16 @@ tsv_out <- dplyr::bind_rows(
   metrics_data
 )
 readr::write_tsv(tsv_out, tsv_path)
+message("Saved data: ", tsv_path)
+
+# Extract and save FP gene names for each pipeline
+fp_genes_data <- dplyr::bind_rows(lapply(results, function(x) {
+  dplyr::bind_rows(
+    dplyr::mutate(x$fp_genes_tusco, Type = "TUSCO", pipeline = x$pipeline, gene_name = associated_gene) %>% select(-associated_gene),
+    dplyr::mutate(x$fp_genes_sirv, Type = "SIRVs", pipeline = x$pipeline, gene_name = associated_transcript) %>% select(-associated_transcript)
+  )
+}))
+
+fp_genes_tsv_path <- file.path(tsv_dir, "fig-3a-mouse-fp-genes.tsv")
+readr::write_tsv(fp_genes_data, fp_genes_tsv_path)
+message("Saved FP genes: ", fp_genes_tsv_path)

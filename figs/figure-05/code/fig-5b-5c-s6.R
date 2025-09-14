@@ -1,4 +1,37 @@
-# Determine LOCAL_ONLY early to conditionally load heavy packages (robust parsing)
+#!/usr/bin/env Rscript
+
+###############################################################
+# Figure 5B-5C-S6 - Multi-sample TUSCO Analysis
+# Usage: Rscript fig-5b-5c-s6.R [output_dir] [width] [height]
+###############################################################
+
+# =============================================================================
+# 1. ARGUMENT PARSING AND SETUP
+# =============================================================================
+
+# Source utilities library
+if (file.exists("../../../scripts/figure_utils.R")) {
+  source("../../../scripts/figure_utils.R")
+} else {
+  # Fallback functions
+  parse_figure_args <- function(defaults = list(out_dir = "..", width = 7.09, height = 3.55)) {
+    args <- commandArgs(trailingOnly = TRUE)
+    result <- defaults
+    if (length(args) > 0) result$out_dir <- args[1]
+    if (length(args) > 1) result$width <- as.numeric(args[2])
+    if (length(args) > 2) result$height <- as.numeric(args[3])
+    return(result)
+  }
+}
+
+# Parse command line arguments
+params <- parse_figure_args(defaults = list(
+  out_dir = "..",           # Output to figure-05/
+  width = 7.09,             # Nature double column width
+  height = 3.55             # Original height
+))
+
+# Determine LOCAL_ONLY early to conditionally load heavy packages
 local_only <- tolower(Sys.getenv("LOCAL_ONLY", "0")) %in% c("1", "true", "t", "yes", "y")
 
 suppressPackageStartupMessages({
@@ -28,34 +61,41 @@ utils::globalVariables(c(
   "Max", "Min", ".pt", "N", "SE", "CI_t", "CI_lower", "CI_upper", "x_start", "x_end", "x_mid"
 ))
 
-# ------------------------------------------------------------
-# Paths and constants (support local figure dir and repo figs/data)
-# ------------------------------------------------------------
-# Figure directory is either cwd if inside figs/figure-05, or that from repo root
+# =============================================================================
+# 2. OUTPUT DIRECTORY SETUP
+# =============================================================================
+
+# Create output directories
+plot_dir <- file.path(params$out_dir, "plots")
+tsv_dir <- file.path(params$out_dir, "tables")
+dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(tsv_dir, recursive = TRUE, showWarnings = FALSE)
+out_pdf <- file.path(plot_dir, "fig-5b-5c.pdf")
+
+message("Output directories:")
+message("  Plots: ", plot_dir)
+message("  Tables: ", tsv_dir)
+
+# =============================================================================
+# 3. PATH RESOLUTION AND DATA SETUP
+# =============================================================================
+
+# Determine figure directory for data resolution
 detect_fig_dir <- function() {
   cwd <- normalizePath(getwd(), mustWork = FALSE)
-  # Case 1: running from the figure folder itself
   if (basename(cwd) == "figure-05" && dir.exists(file.path(cwd, "code"))) {
     return(cwd)
   }
-  # Case 2: running from the code subfolder inside figure-05
   parent <- normalizePath(file.path(cwd, ".."), mustWork = FALSE)
   if (basename(parent) == "figure-05" && dir.exists(file.path(parent, "code"))) {
     return(parent)
   }
-  # Case 3: running from repo root (or elsewhere) where figs/figure-05 exists
   if (dir.exists(file.path(cwd, "figs", "figure-05"))) {
     return(normalizePath(file.path(cwd, "figs", "figure-05"), mustWork = FALSE))
   }
-  # Fallback: best-effort to the parent of current dir
-  parent
+  return(params$out_dir)  # Use output directory as fallback
 }
 fig_dir <- detect_fig_dir()
-plot_dir <- file.path(fig_dir, "plots")
-tsv_dir  <- file.path(fig_dir, "tables")
-if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
-if (!dir.exists(tsv_dir)) dir.create(tsv_dir, recursive = TRUE)
-out_pdf <- file.path(plot_dir, "fig-5b-5c.pdf")
 
 # Repository root: two levels above figs/figure-05
 repo_root <- normalizePath(file.path(fig_dir, "..", ".."), mustWork = FALSE)
@@ -952,13 +992,13 @@ export_df <- bind_rows(
   metrics_summary_out %>% mutate(dataset = "5c_summary")
 )
 readr::write_tsv(export_df, underlying_out)
-message("Wrote underlying data to ", underlying_out)
+message("Saved data: ", underlying_out)
 
-pdf(out_pdf, width = 7.09, height = 3.55)
+pdf(out_pdf, width = params$width, height = params$height)
 print(combined)
 dev.off()
 
-message("Wrote combined figure to ", out_pdf)
+message("Saved plot: ", out_pdf)
 
 # ------------------------------------------------------------
 # Export SIRV underlying data and figure S6
@@ -980,10 +1020,10 @@ sirv_export_df <- bind_rows(
 )
 
 readr::write_tsv(sirv_export_df, sirv_underlying_out)
-message("Wrote SIRV underlying data to ", sirv_underlying_out)
+message("Saved data: ", sirv_underlying_out)
 
 s6_out_pdf <- file.path(plot_dir, "fig-s6.pdf")
-pdf(s6_out_pdf, width = 7.09, height = 3.55)
+pdf(s6_out_pdf, width = params$width, height = params$height)
 print(fig_s6_panel)
 dev.off()
-message("Wrote SIRV spike-in figure to ", s6_out_pdf)
+message("Saved plot: ", s6_out_pdf)
