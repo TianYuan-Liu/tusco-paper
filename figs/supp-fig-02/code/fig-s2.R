@@ -268,9 +268,14 @@ p_log <- ggplot(plot_dt_log, aes(x = Group, y = log_score, fill = PlotGroup)) +
 ### 5. Save log figure + TSV ###
 ############################
 
-# Save PDF only under ./plot
-ggsave(filename = output_file_log, plot = p_log, device = "pdf", width = 4.0, height = 2.6, units = "in", dpi = 300, bg = "transparent")
-cat("[INFO] Saved log-scale figure: ", output_file_log, "\n", sep = "")
+# =============================================================================
+# 7. OUTPUT GENERATION
+# =============================================================================
+
+# Save plot to PDF with standardized dimensions
+ggsave(filename = output_file_log, plot = p_log, device = "pdf", 
+       width = params$width, height = params$height, units = "in", dpi = 300, bg = "transparent")
+message("Saved plot: ", output_file_log)
 
 # Matching TSV with underlying data and minimal metadata.
 # fig-s2-log.tsv: per-gene log-scale values + summaries

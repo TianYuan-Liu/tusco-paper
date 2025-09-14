@@ -498,9 +498,12 @@ overall_grid_with_legend <- plot_grid(overall_grid_padded, radar_plot_legend, nc
 # Save as fig-4b.pdf (width 180 mm; height derived from 4 rows + headers + legend)
 cell_width_mm <- 180 / 8
 overall_height_mm <- cell_width_mm * 5.6 + 12
-  figure_path <- file.path(output_dir, "fig-4b.pdf")
-message("Saving figure to ", figure_path)
-ggsave(figure_path, overall_grid_with_legend, width = 180, height = overall_height_mm, units = "mm", device = "pdf", limitsize = FALSE)
+  figure_path <- file.path(plot_dir, "fig-4b.pdf")
+message("Saved plot: ", figure_path)
+# Convert dimensions from mm to inches for consistency with params
+width_inches <- if (params$width == 12) 180/25.4 else params$width  # Use mm if default, else inches
+height_inches <- if (params$height == 10) overall_height_mm/25.4 else params$height
+ggsave(figure_path, overall_grid_with_legend, width = width_inches, height = height_inches, units = "in", device = "pdf", limitsize = FALSE)
 
 # Write TSV of underlying metrics/metadata
 tsv_path <- file.path(tsv_dir, "fig-4b.tsv")
@@ -514,16 +517,16 @@ if (length(metrics_records) > 0) {
     other_cols <- setdiff(colnames(metrics_df), std_cols)
     metrics_df <- metrics_df[, c(std_cols, other_cols)]
     write_tsv(metrics_df, tsv_path)
-    message("Wrote TSV to ", tsv_path)
+    message("Saved data: ", tsv_path)
   } else {
     # Fallback minimal TSV when no records (shouldn't happen)
     write_tsv(tibble(figure_id = "fig-4b", note = "no_metrics_records"), tsv_path)
-    message("Wrote minimal TSV to ", tsv_path)
+    message("Saved data: ", tsv_path)
   }
 } else {
   # No cells processed or no data everywhere
   write_tsv(tibble(figure_id = "fig-4b", status = "no_data"), tsv_path)
-  message("Wrote TSV to ", tsv_path)
+  message("Saved data: ", tsv_path)
 }
 
 message("Done.")
